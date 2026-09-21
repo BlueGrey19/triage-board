@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Triage Board</title>
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Orbitron:wght@600;700;800&family=Chakra+Petch:wght@400;500;600;700&family=JetBrains+Mono:wght@500;600&display=swap">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div class="wrap">
+  <header class="head">
+    <p class="kicker">Priority triage · saved locally</p>
+    <h1>Triage Board</h1>
+    <div class="prog">
+      <div class="progbar"><i id="barFill"></i></div>
+      <div class="progtxt"><b id="doneN">0</b> of <b id="totN">0</b> done · <span id="leftN">0</span> left</div>
+    </div>
+  </header>
+
+  <div class="controls">
+    <div class="controls-in">
+      <!-- Row 1: projects -->
+      <div class="row">
+        <span class="rowlab">Project</span>
+        <div class="seg-row" id="projFilters"><!-- chips injected --></div>
+        <button class="mini" id="manageProj" title="Add or remove projects">⚙ Projects</button>
+      </div>
+      <!-- Row 2: status -->
+      <div class="row">
+        <span class="rowlab">Status</span>
+        <div class="seg-row" id="stateFilters">
+          <button class="f" data-k="view" data-v="all" aria-pressed="true">All</button>
+          <button class="f" data-k="view" data-v="open" aria-pressed="false">Not done</button>
+          <button class="f" data-k="view" data-v="done" aria-pressed="false">Done</button>
+          <button class="f" data-k="view" data-v="blocked" aria-pressed="false">Blocked</button>
+        </div>
+        <span class="grow"></span>
+        <button class="addbtn" id="addBtn">+ Add item</button>
+      </div>
+    </div>
+  </div>
+
+  <main id="board"><p class="empty">Loading…</p></main>
+</div>
+
+<!-- Add / edit item modal -->
+<div class="modal-bg" id="modalBg">
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="mTitle">
+    <h2 id="mTitle">New item</h2>
+    <p class="merr" id="mErr"></p>
+    <div class="fld"><label for="mTitleIn">Title</label><input id="mTitleIn" placeholder="What needs doing?" maxlength="200"></div>
+    <div class="frow">
+      <div class="fld"><label for="mProj">Project</label><select id="mProj"></select></div>
+      <div class="fld"><label for="mPrio">Priority</label>
+        <select id="mPrio">
+          <option value="critical">Critical</option>
+          <option value="high">High</option>
+          <option value="medium" selected>Medium</option>
+          <option value="low">Low</option>
+        </select>
+      </div>
+    </div>
+    <div class="fld"><label for="mGroup">Group / area <span class="opt">(optional)</span></label><input id="mGroup" list="groupList" placeholder="e.g. Books, Analytics, Truck" maxlength="80"><datalist id="groupList"></datalist></div>
+    <div class="fld"><label for="mNote">Note <span class="opt">(optional)</span></label><textarea id="mNote" placeholder="Any detail you want on the card" maxlength="800"></textarea></div>
+    <div class="macts">
+      <button class="mbtn" id="mCancel">Cancel</button>
+      <button class="mbtn primary" id="mSave">Add to board</button>
+    </div>
+  </div>
+</div>
+
+<!-- Manage projects modal -->
+<div class="modal-bg" id="projBg">
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="pTitle">
+    <h2 id="pTitle">Your projects</h2>
+    <p class="psub">These show up in the Project filter and in the dropdown when you add an item.</p>
+    <ul class="plist" id="plist"></ul>
+    <p class="merr" id="pErr"></p>
+    <div class="fld addproj">
+      <label for="pNewIn">Add a project</label>
+      <div class="frow">
+        <input id="pNewIn" placeholder="e.g. Acme Rollout" maxlength="80">
+        <button class="mbtn primary" id="pAdd" style="flex:none">Add</button>
+      </div>
+    </div>
+    <div class="macts"><button class="mbtn" id="pClose">Done</button></div>
+  </div>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>

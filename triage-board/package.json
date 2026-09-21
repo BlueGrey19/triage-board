@@ -1,0 +1,19 @@
+{
+  "name": "triage-board",
+  "version": "1.0.0",
+  "description": "A neon cyberpunk to-do triage board — priority bands, per-project grouping, and JSON persistence. Runs locally, saves your changes to disk.",
+  "type": "commonjs",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "keywords": ["todo", "kanban", "triage", "board", "priority", "productivity"],
+  "license": "MIT",
+  "dependencies": {
+    "express": "^4.19.2"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
