@@ -1,0 +1,13 @@
+# dependencies
+node_modules/
+
+# your personal board data — stays on your machine, never committed
+data/board.json
+data/board.json.tmp
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
+*.log
+.vscode/*
+!.vscode/launch.json
