@@ -1,6 +1,7 @@
 /* Triage Board — frontend.
- * Talks to the local server's /api endpoints. The server owns the data
- * (data/board.json); this file just renders it and sends changes back.
+ * Talks to the server's /api endpoints. The server owns the data (local
+ * files, or the signed-in user's private GitHub repo); this file just renders
+ * it and sends changes back.
  */
 (function () {
   'use strict';
@@ -25,13 +26,20 @@
 
   /* ---------- tiny API client ---------- */
   function api(method, url, body) {
+    var headers = { 'X-Triage': '1' };
+    if (body) headers['Content-Type'] = 'application/json';
     return fetch(url, {
       method: method,
-      headers: body ? { 'Content-Type': 'application/json' } : undefined,
+      headers: headers,
+      credentials: 'same-origin',
       body: body ? JSON.stringify(body) : undefined
     }).then(function (r) {
       return r.json().catch(function () { return {}; }).then(function (data) {
-        if (!r.ok) throw new Error(data.error || ('Request failed (' + r.status + ')'));
+        if (!r.ok) {
+          // Session expired or repo went missing: drop back to the gate screen.
+          if (data.code === 'auth' || data.code === 'setup') setTimeout(boot, 0);
+          throw new Error(data.error || ('Request failed (' + r.status + ')'));
+        }
         return data;
       });
     });
@@ -285,7 +293,11 @@
   document.getElementById('mCancel').addEventListener('click', closeModal);
   modalBg.addEventListener('click', function (e) { if (e.target === modalBg) closeModal(); });
   document.addEventListener('keydown', function (e) {
-    if (e.key === 'Escape') { if (modalBg.classList.contains('open')) closeModal(); if (projBg.classList.contains('open')) closeProj(); }
+    if (e.key === 'Escape') {
+      if (modalBg.classList.contains('open')) closeModal();
+      if (projBg.classList.contains('open')) closeProj();
+      if (snipBg.classList.contains('open')) closeSnip();
+    }
   });
 
   document.getElementById('mSave').addEventListener('click', function () {
@@ -355,14 +367,302 @@
 
   /* ---------- toast ---------- */
   var toastEl = null, toastT = null;
-  function toast(msg) {
+  function toast(msg, ok) {
     if (!toastEl) { toastEl = document.createElement('div'); toastEl.className = 'toast'; document.body.appendChild(toastEl); }
     toastEl.textContent = msg;
+    toastEl.classList.toggle('ok', !!ok);
     toastEl.classList.add('show');
     clearTimeout(toastT);
-    toastT = setTimeout(function () { toastEl.classList.remove('show'); }, 3200);
+    toastT = setTimeout(function () { toastEl.classList.remove('show'); }, ok ? 1600 : 3200);
+  }
+
+  /* ==========================================================
+   * Snippet library
+   * ========================================================== */
+  var snippets = [];
+  var snipsLoaded = false;
+  var snipFilter = { q: '', tag: 'all' };
+  var editingSnip = null;
+  var snipsEl = document.getElementById('snips');
+  var snipBg = document.getElementById('snipBg');
+  var sErr = document.getElementById('sErr');
+  var LANG_LABEL = { deluge: 'Deluge', javascript: 'JS', json: 'JSON', sql: 'SQL', python: 'Python', html: 'HTML', css: 'CSS', bash: 'Shell', plaintext: 'Text' };
+  var HLJS_NAME = { deluge: 'deluge', javascript: 'javascript', json: 'json', sql: 'sql', python: 'python', html: 'xml', css: 'css', bash: 'bash' };
+
+  // highlight.js has no Deluge grammar, so register a small one.
+  function registerDeluge() {
+    if (!window.hljs || hljs.getLanguage('deluge')) return;
+    hljs.registerLanguage('deluge', function (hl) {
+      return {
+        name: 'Deluge',
+        keywords: {
+          keyword: 'if else for each in while return break continue void try catch throw invokeurl info alert ' +
+                   'cancel submit openUrl sendmail insert into update delete fetch from where range sort by',
+          type: 'string int bigint long decimal float bool boolean date datetime time map list collection file',
+          literal: 'true false null',
+          built_in: 'zoho input thisapp'
+        },
+        contains: [
+          hl.C_LINE_COMMENT_MODE, hl.C_BLOCK_COMMENT_MODE,
+          hl.QUOTE_STRING_MODE, hl.APOS_STRING_MODE, hl.C_NUMBER_MODE,
+          { className: 'title.function', begin: /(?<=\.)[A-Za-z_]\w*(?=\s*\()/, relevance: 0 }
+        ]
+      };
+    });
+  }
+
+  function highlight(code, lang) {
+    var name = HLJS_NAME[lang];
+    if (window.hljs && name) {
+      registerDeluge();
+      if (hljs.getLanguage(name)) {
+        try { return hljs.highlight(code, { language: name, ignoreIllegals: true }).value; } catch (_) {}
+      }
+    }
+    return esc(code);
+  }
+
+  function loadSnippets() {
+    return api('GET', '/api/snippets').then(function (list) {
+      snippets = list; snipsLoaded = true; renderSnippets();
+    }).catch(function (e) {
+      snipsEl.innerHTML = '<p class="empty">Could not load snippets.<br><br>' + esc(e.message) + '</p>';
+    });
+  }
+
+  function snipMatches(s) {
+    if (snipFilter.tag !== 'all' && s.tags.indexOf(snipFilter.tag) < 0) return false;
+    var q = snipFilter.q.trim().toLowerCase();
+    if (!q) return true;
+    var hay = (s.title + '\n' + s.description + '\n' + s.tags.join(' ') + '\n' + s.code).toLowerCase();
+    return q.split(/\s+/).every(function (t) { return hay.indexOf(t) >= 0; });
+  }
+
+  function snipHTML(s) {
+    var h = '<article class="card snip" data-sid="' + esc(s.id) + '">';
+    h += '<div class="snip-head"><h3 class="ct">' + esc(s.title) + '</h3><span class="lang">' + esc(LANG_LABEL[s.language] || s.language) + '</span></div>';
+    if (s.tags.length) {
+      h += '<div class="tags">' + s.tags.map(function (t) {
+        return '<button class="tag stag" data-act="tag" data-tag="' + esc(t) + '">#' + esc(t) + '</button>';
+      }).join('') + '</div>';
+    }
+    if (s.description) h += '<p class="reason">' + esc(s.description) + '</p>';
+    h += '<pre class="code"><code class="hljs">' + highlight(s.code, s.language) + '</code></pre>';
+    h += '<div class="cfoot"><button class="copy" data-act="copy">copy code</button><span class="grow"></span>';
+    h += '<button class="edit" data-act="sedit" title="Edit snippet">edit</button>';
+    h += '<button class="del" data-act="sdel" title="Delete snippet" aria-label="Delete snippet">✕</button></div>';
+    h += '</article>';
+    return h;
+  }
+
+  function renderSnippets() {
+    // tag chips, most-used first
+    var counts = {};
+    snippets.forEach(function (s) { s.tags.forEach(function (t) { counts[t] = (counts[t] || 0) + 1; }); });
+    var tags = Object.keys(counts).sort(function (a, b) { return counts[b] - counts[a] || a.localeCompare(b); });
+    if (snipFilter.tag !== 'all' && !counts[snipFilter.tag]) snipFilter.tag = 'all';
+    var chips = '<button class="f" data-tag="all" aria-pressed="' + (snipFilter.tag === 'all') + '">All <span class="c">' + snippets.length + '</span></button>';
+    tags.forEach(function (t) {
+      chips += '<button class="f" data-tag="' + esc(t) + '" aria-pressed="' + (snipFilter.tag === t) + '">#' + esc(t) + ' <span class="c">' + counts[t] + '</span></button>';
+    });
+    document.getElementById('tagFilters').innerHTML = chips;
+    document.getElementById('tagList').innerHTML = tags.map(function (t) { return '<option value="' + esc(t) + '">'; }).join('');
+
+    var vis = snippets.filter(snipMatches);
+    if (!snippets.length) {
+      snipsEl.innerHTML = '<p class="empty">No snippets yet. Hit <b>+ New snippet</b> to save your first one.</p>';
+    } else if (!vis.length) {
+      snipsEl.innerHTML = '<p class="empty">Nothing matches that search.</p>';
+    } else {
+      snipsEl.innerHTML = '<div class="snip-grid">' + vis.map(snipHTML).join('') + '</div>';
+    }
+  }
+
+  function snipById(id) {
+    for (var i = 0; i < snippets.length; i++) if (snippets[i].id === id) return snippets[i];
+    return null;
+  }
+
+  function copyText(text) {
+    if (navigator.clipboard && window.isSecureContext) return navigator.clipboard.writeText(text);
+    return new Promise(function (resolve, reject) {
+      var ta = document.createElement('textarea');
+      ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
+      document.body.appendChild(ta); ta.select();
+      try { document.execCommand('copy') ? resolve() : reject(new Error('Copy failed')); }
+      catch (e) { reject(e); }
+      document.body.removeChild(ta);
+    });
+  }
+
+  snipsEl.addEventListener('click', function (e) {
+    var btn = e.target.closest('[data-act]'); if (!btn) return;
+    var card = btn.closest('[data-sid]'); if (!card) return;
+    var s = snipById(card.dataset.sid); if (!s) return;
+    var act = btn.dataset.act;
+    if (act === 'copy') {
+      copyText(s.code).then(function () { toast('Copied “' + s.title + '”', true); }, function () { toast('Could not copy. Select the code manually.'); });
+    } else if (act === 'tag') {
+      snipFilter.tag = btn.dataset.tag; renderSnippets();
+    } else if (act === 'sedit') {
+      openSnip(s);
+    } else if (act === 'sdel') {
+      if (!confirm('Delete snippet "' + s.title + '"?')) return;
+      api('DELETE', '/api/snippets/' + encodeURIComponent(s.id)).then(loadSnippets).catch(function (er) { toast(er.message); });
+    }
+  });
+
+  document.getElementById('tagFilters').addEventListener('click', function (e) {
+    var b = e.target.closest('.f'); if (!b) return;
+    snipFilter.tag = b.dataset.tag; renderSnippets();
+  });
+
+  var searchEl = document.getElementById('snipSearch');
+  searchEl.addEventListener('input', function () { snipFilter.q = searchEl.value; renderSnippets(); });
+  document.addEventListener('keydown', function (e) {
+    var tag = (e.target.tagName || '').toLowerCase();
+    if (e.key === '/' && currentTab === 'snippets' && tag !== 'input' && tag !== 'textarea' && tag !== 'select') {
+      e.preventDefault(); searchEl.focus();
+    }
+  });
+
+  function openSnip(s) {
+    editingSnip = s ? s.id : null;
+    document.getElementById('sTitle').textContent = s ? 'Edit snippet' : 'New snippet';
+    sErr.textContent = '';
+    document.getElementById('sTitleIn').value = s ? s.title : '';
+    document.getElementById('sLang').value = s ? s.language : 'deluge';
+    document.getElementById('sTags').value = s ? s.tags.join(', ') : (snipFilter.tag !== 'all' ? snipFilter.tag : '');
+    document.getElementById('sDesc').value = s ? s.description : '';
+    document.getElementById('sCode').value = s ? s.code : '';
+    snipBg.classList.add('open');
+    setTimeout(function () { document.getElementById('sTitleIn').focus(); }, 30);
+  }
+  function closeSnip() { snipBg.classList.remove('open'); editingSnip = null; }
+
+  document.getElementById('snipAdd').addEventListener('click', function () { openSnip(null); });
+  document.getElementById('sCancel').addEventListener('click', closeSnip);
+  snipBg.addEventListener('click', function (e) { if (e.target === snipBg) closeSnip(); });
+
+  // Tab key inserts two spaces in the code box instead of leaving it.
+  document.getElementById('sCode').addEventListener('keydown', function (e) {
+    if (e.key !== 'Tab' || e.shiftKey) return;
+    e.preventDefault();
+    var ta = e.target, a = ta.selectionStart, b = ta.selectionEnd;
+    ta.value = ta.value.slice(0, a) + '  ' + ta.value.slice(b);
+    ta.selectionStart = ta.selectionEnd = a + 2;
+  });
+
+  document.getElementById('sSave').addEventListener('click', function () {
+    var title = document.getElementById('sTitleIn').value.trim();
+    var code = document.getElementById('sCode').value;
+    if (!title) { sErr.textContent = 'Give the snippet a title.'; document.getElementById('sTitleIn').focus(); return; }
+    if (!code.trim()) { sErr.textContent = 'Paste some code.'; document.getElementById('sCode').focus(); return; }
+    var payload = {
+      title: title,
+      language: document.getElementById('sLang').value,
+      tags: document.getElementById('sTags').value,
+      description: document.getElementById('sDesc').value.trim(),
+      code: code
+    };
+    var btn = this; btn.disabled = true;
+    var req = editingSnip
+      ? api('PATCH', '/api/snippets/' + encodeURIComponent(editingSnip), payload)
+      : api('POST', '/api/snippets', payload);
+    req.then(function () { closeSnip(); return loadSnippets(); })
+       .catch(function (e) { sErr.textContent = e.message; })
+       .then(function () { btn.disabled = false; });
+  });
+
+  /* ==========================================================
+   * Tabs, session and sign-in gate
+   * ========================================================== */
+  var currentTab = 'board';
+  var gateEl = document.getElementById('gate');
+
+  function showTab(name) {
+    currentTab = name === 'snippets' ? 'snippets' : 'board';
+    document.getElementById('boardView').hidden = currentTab !== 'board';
+    document.getElementById('progRow').hidden = currentTab !== 'board';
+    document.getElementById('snippetsView').hidden = currentTab !== 'snippets';
+    document.querySelectorAll('#tabs [data-tab]').forEach(function (b) {
+      b.setAttribute('aria-selected', String(b.dataset.tab === currentTab));
+    });
+    try { history.replaceState(null, '', currentTab === 'snippets' ? '#snippets' : location.pathname); } catch (_) {}
+    if (currentTab === 'snippets' && !snipsLoaded) loadSnippets();
+  }
+  document.getElementById('tabs').addEventListener('click', function (e) {
+    var b = e.target.closest('[data-tab]'); if (b) showTab(b.dataset.tab);
+  });
+
+  function setGated(on) {
+    gateEl.hidden = !on;
+    document.getElementById('tabs').hidden = on;
+    if (on) {
+      document.getElementById('boardView').hidden = true;
+      document.getElementById('snippetsView').hidden = true;
+      document.getElementById('progRow').hidden = true;
+    }
+  }
+
+  function gateLogin() {
+    setGated(true);
+    document.getElementById('who').hidden = true;
+    document.getElementById('kicker').textContent = 'Priority triage · stored in your GitHub';
+    gateEl.innerHTML =
+      '<div class="gate-card"><h2>Sign in</h2>' +
+      '<p>Your board and snippet library live in a private GitHub repo that only you can see. ' +
+      'Every change is a commit, so you get full history for free.</p>' +
+      '<a class="addbtn big" href="/auth/login">Sign in with GitHub</a></div>';
+  }
+
+  function gateSetup(s) {
+    setGated(true);
+    var install = s.installUrl
+      ? '<a href="' + esc(s.installUrl) + '" target="_blank" rel="noopener">Install the app</a> and choose <b>Only select repositories</b> → <code>' + esc(s.repo) + '</code>.'
+      : 'Install this board’s GitHub App on <b>only</b> that repo (ask whoever runs this board for the install link).';
+    gateEl.innerHTML =
+      '<div class="gate-card"><h2>One-time setup</h2>' +
+      '<p>Signed in as <b>@' + esc(s.user.login) + '</b>, but the board can’t reach <code>' + esc(s.repo) + '</code> yet.</p>' +
+      '<ol>' +
+      '<li><a href="' + esc(s.newRepoUrl) + '" target="_blank" rel="noopener">Create a private repo</a> named <code>' + esc(s.repo.split('/')[1]) + '</code>. Leave it empty.</li>' +
+      '<li>' + install + '</li>' +
+      '</ol>' +
+      '<div class="macts"><form method="post" action="/auth/logout"><button class="mbtn" type="submit">Sign out</button></form>' +
+      '<button class="mbtn primary" id="gateRetry">I’ve done this, check again</button></div></div>';
+    document.getElementById('gateRetry').addEventListener('click', boot);
+  }
+
+  function enterApp(s) {
+    setGated(false);
+    var kicker = document.getElementById('kicker');
+    if (s.mode === 'github') {
+      kicker.textContent = 'Priority triage · synced to GitHub';
+      var who = document.getElementById('who');
+      who.hidden = false;
+      document.getElementById('whoAvatar').src = s.user.avatar || '';
+      var repoA = document.getElementById('whoRepo');
+      repoA.textContent = s.repo;
+      repoA.href = 'https://github.com/' + s.repo;
+      if (s.repoPrivate === false) toast('Heads up: ' + s.repo + ' is PUBLIC. Make it private in its GitHub settings.');
+    } else {
+      kicker.textContent = 'Priority triage · saved locally';
+    }
+    snipsLoaded = false;
+    showTab(location.hash === '#snippets' ? 'snippets' : 'board');
+    loadBoard();
+  }
+
+  function boot() {
+    api('GET', '/api/session').then(function (s) {
+      if (!s.signedIn) return gateLogin();
+      if (!s.ready) return gateSetup(s);
+      enterApp(s);
+    }).catch(function (e) {
+      boardEl.innerHTML = '<p class="empty">Could not reach the server.<br>Is it still running?<br><br>' + esc(e.message) + '</p>';
+    });
   }
 
   /* ---------- go ---------- */
-  loadBoard();
+  boot();
 })();

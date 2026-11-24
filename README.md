@@ -1,138 +1,172 @@
 # Triage Board
 
-A single, no-nonsense **to-do triage board** you run on your own machine. Items
-are sorted into four priority bands — **Critical / High / Medium / Low** — and
-within each band they're grouped by project, so when you're juggling several
-clients or side-projects you can still see each one's pile at a glance.
+A neon-on-black **to-do triage board** with a built-in **code snippet library**.
 
-It's a neon-on-black web app, but there's no cloud and no account: a small local
-server keeps everything in one plain `data/board.json` file on your computer.
-Close it, reopen it, restart your machine — your board is exactly where you left
-it.
+- **Board:** items are sorted into four priority bands (**Critical / High / Medium / Low**)
+  and grouped by project inside each band. When you're juggling several clients you
+  can still see each one's pile at a glance.
+- **Snippets:** your reusable code (Deluge, JS, SQL, and others) with search, tags,
+  syntax highlighting and one-click copy, so you stop rewriting the same thing for
+  every client.
 
-![priority bands: Critical, High, Medium, Low — each split into per-project groups]
+It runs in one of two modes:
 
-## What it does
+| | **Local mode** (default) | **GitHub mode** |
+|---|---|---|
+| Login | none | "Sign in with GitHub" |
+| Where data lives | `data/` folder on your machine | a private repo in *your* GitHub account |
+| History / undo | no | every change is a git commit |
+| Multi-device / phone | no | yes, if you host it |
+| Multi-user | no | yes, each person gets their own repo |
+| Setup | `npm start` | create a GitHub App (about 5 minutes) |
 
-- **Add, edit and delete items** right on the board — no editing files by hand.
-- **Four priority bands.** Change an item's priority from a dropdown on the card,
-  or just **drag the card** into another band.
-- **Per-project grouping inside every band**, so Client A's critical work is
-  visually separated from Client B's.
-- **Manage your own projects.** Add the things *you're* working on (Milltrans,
-  Cradle Tech, RMI, whatever) and they instantly become options in the project
-  filter and in the "new item" dropdown.
-- **Two filter rows** — one for project, one for status (All / Not done / Done /
-  Blocked).
-- **Four statuses per item**: Open, Doing, Blocked, Done.
-- **Everything saves to disk automatically.** Every change is written to
-  `data/board.json` by the server the moment you make it.
+---
+
+## Features
+
+- **Add, edit and delete items** right on the board.
+- **Four priority bands.** Change an item's priority from the card, or **drag the card**
+  into another band.
+- **Per-project grouping inside every band.**
+- **Manage your own projects** with **⚙ Projects**. They become filter chips and
+  options in the "new item" dropdown.
+- **Status per item:** Open, Doing, Blocked, Done, plus filter rows for project and status.
+- **Snippet library:** a title, language, tags, description and code for each snippet.
+  Search across all of them (press `/`), filter by tag, and copy with one click. Deluge
+  gets its own syntax highlighting.
+- **Saves automatically.** Every change is written the moment you make it.
 
 ---
 
 ## Requirements
 
-- [Node.js](https://nodejs.org) version 18 or newer. Check with:
-  ```bash
-  node --version
-  ```
-  If that prints something like `v18.x` or higher, you're set. If the command
-  isn't found, install Node from the link above first.
+[Node.js](https://nodejs.org) 18 or newer (`node --version`).
 
----
-
-## Run it locally (terminal)
-
-From inside the project folder:
+## Quick start (local mode)
 
 ```bash
-npm install     # one time — downloads the one dependency (Express)
-npm start       # starts the board
-```
-
-You'll see:
-
-```
-  Triage Board is running.
-  Open  ->  http://localhost:4317
-```
-
-Open that link in your browser. **Leave the terminal window open** while you use
-the board — that's the little server doing the saving. Press `Ctrl + C` in the
-terminal to stop it.
-
-> Want a different port? `PORT=8080 npm start`
-
-## Run it from VS Code
-
-1. Open the project folder in VS Code (`File > Open Folder…`).
-2. Open a terminal (`Terminal > New Terminal`) and run `npm install` once.
-3. Press **F5** (or `Run > Start Debugging`) — the included launch config boots
-   the server. Then open http://localhost:4317.
-
-Alternatively just run `npm start` in the VS Code terminal.
-
----
-
-## Where your projects live
-
-You don't need to touch any files to manage projects — click **⚙ Projects** in
-the top bar to add or remove them. But if you'd rather set them up before first
-launch, you can:
-
-- Edit **`data/seed.json`** *before your first run* to change the starter
-  projects. This file is only used to create your board the very first time.
-- Once you've run the app, your live data is in **`data/board.json`**. You can
-  hand-edit that too if you like — it's just JSON — but it's easier to use the
-  buttons.
-
-Removing a project from the list does **not** delete its items; they stay on the
-board with their label, you just lose the filter chip for them.
-
----
-
-## Your data & privacy
-
-- Everything is stored in `data/board.json` on your own machine. Nothing is sent
-  anywhere.
-- That file is **git-ignored**, so if you push this repo to GitHub your personal
-  board is not uploaded — only the app itself is shared. Each person who clones
-  the repo gets their own fresh, empty board.
-- Want a backup? Copy `data/board.json` somewhere safe. Want to move your board
-  to another computer? Copy that one file across.
-
----
-
-## Put it on GitHub (so friends can use it)
-
-From inside the project folder:
-
-```bash
-git init
-git add .
-git commit -m "Triage Board"
-```
-
-Then create an empty repository on GitHub (no README, since you already have
-one), and follow the two lines GitHub shows you — they'll look like:
-
-```bash
-git remote add origin https://github.com/YOUR-USERNAME/triage-board.git
-git branch -M main
-git push -u origin main
-```
-
-Your friends then just:
-
-```bash
-git clone https://github.com/YOUR-USERNAME/triage-board.git
-cd triage-board
 npm install
 npm start
 ```
 
-…and they get their own private board with the example projects, ready to make
-their own.
+Open http://localhost:4317. Your board saves to `data/board.json` and snippets to
+`data/snippets/*.md`. Both are git-ignored, so pushing this repo never uploads your data.
+
+In VS Code you can also press **F5**. The included launch config starts the server.
+
+---
+
+## GitHub mode (sign in with GitHub, data in your own private repo)
+
+### How it works
+
+- You sign in with a **GitHub App**. Its login token only works on repos the app is
+  **installed on**, so the board can touch your `triage-data` repo and nothing else:
+  not your work repos or any other private code. (An OAuth App would need the `repo`
+  scope, which grants access to *every* private repo you own.)
+- The login code is exchanged for a token on the server, so the client secret
+  never reaches the browser. The token is kept in an encrypted, HttpOnly cookie.
+- Each user's data lives in **their own** private repo:
+
+  ```
+  <your-username>/triage-data
+  ├── board.json              projects + triage items
+  └── snippets/
+      ├── books-create-invoice-a1b2.md
+      └── ...                 one readable markdown file per snippet
+  ```
+
+  Each change is a commit (`Add item: …`, `Update snippet: …`), so you can view
+  history, diff and roll back on github.com. You can also hand-edit snippet files
+  there; the app picks them up.
+
+### 1. Create the GitHub App
+
+GitHub → **Settings → Developer settings → GitHub Apps → New GitHub App**
+([direct link](https://github.com/settings/apps/new)).
+
+| Field | Value |
+|---|---|
+| GitHub App name | anything, e.g. `my-triage-board` |
+| Homepage URL | `http://localhost:4317` (or your hosted URL) |
+| Callback URL | `http://localhost:4317/auth/callback` |
+| Expire user authorization tokens | ✅ leave on |
+| Request user authorization (OAuth) during installation | optional |
+| Webhook → Active | ❌ **untick** (not needed) |
+| Repository permissions → **Contents** | **Read and write** |
+| *All other permissions* | No access |
+| Where can this GitHub App be installed? | *Only on this account* (or *Any account* if friends will use it) |
+
+Click **Create GitHub App**, then on the app's page:
+
+- Copy the **Client ID**.
+- Click **Generate a new client secret** and copy it.
+- Note the app's URL name (the `my-triage-board` part of `github.com/apps/my-triage-board`).
+
+### 2. Create your data repo and install the app on it
+
+1. [Create a **private** repo](https://github.com/new?name=triage-data&visibility=private)
+   named `triage-data`. Leave it empty.
+2. Go to `https://github.com/apps/<your-app-name>` → **Install** → choose
+   **Only select repositories** → pick `triage-data`.
+
+If you skip this step, the app shows you these same two steps after you sign in.
+
+### 3. Configure and run
+
+```bash
+cp .env.example .env
+```
+
+Fill in `.env`:
+
+```ini
+BASE_URL=http://localhost:4317
+GITHUB_CLIENT_ID=Iv23li...
+GITHUB_CLIENT_SECRET=...
+GITHUB_APP_SLUG=my-triage-board
+SESSION_SECRET=<output of the command below>
+```
+
+```bash
+node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+npm start
+```
+
+Open http://localhost:4317 and click **Sign in with GitHub**.
+
+### All settings
+
+| Variable | Default | What it does |
+|---|---|---|
+| `PORT` | `4317` | Port the server listens on |
+| `BASE_URL` | `http://localhost:$PORT` | Public address. Callback is `BASE_URL/auth/callback` |
+| `GITHUB_CLIENT_ID` | – | GitHub App client ID. **Setting this turns on GitHub mode** |
+| `GITHUB_CLIENT_SECRET` | – | GitHub App client secret |
+| `GITHUB_APP_SLUG` | – | App URL name, used for the "Install the app" link |
+| `DATA_REPO` | `triage-data` | Name of each user's data repo |
+| `SESSION_SECRET` | – | 32+ random chars; encrypts the login cookie (required in GitHub mode) |
+| `ALLOWED_USERS` | *(anyone)* | Comma-separated GitHub usernames allowed to sign in |
+| `DATA_DIR` | `./data` | Where local mode keeps its files |
+
+### Hosting it (open it on your phone)
+
+Any Node host works (Render, Railway, Fly.io, a VPS). In GitHub mode the server
+keeps nothing on disk, so free tiers that wipe the filesystem on restart are fine.
+
+1. Deploy with start command `npm start`.
+2. Set the environment variables above on the host. Set `BASE_URL` to the
+   `https://…` address. Cookies are automatically marked `Secure` on https.
+3. In your GitHub App settings, **add** `https://<your-host>/auth/callback` as a
+   second Callback URL (keep the localhost one for local dev).
+4. If it's just for you, set `ALLOWED_USERS=<your-username>`.
+
+### Letting friends use it
+
+Set the app to *Any account* and send them the install link
+(`https://github.com/apps/<your-app-name>`). Each friend creates their own private
+`triage-data` repo, installs the app on it and signs in. They only ever see their
+own data, and you never see theirs.
 
 ---
 
@@ -140,30 +174,36 @@ their own.
 
 ```
 triage-board/
-├── server.js            the local server + save-to-disk API
-├── package.json         dependency + start script
-├── public/              the board UI (served to your browser)
-│   ├── index.html
-│   ├── styles.css
-│   └── app.js
+├── server.js              Express server: auth, API, picks storage backend
+├── lib/
+│   ├── model.js           item / snippet validation + snippet file format
+│   ├── store-local.js     local-mode storage (data/ folder)
+│   ├── store-github.js    GitHub-mode storage (Contents + GraphQL APIs)
+│   ├── github.js          GitHub login + API client (built-in fetch, no SDK)
+│   ├── session.js         encrypted cookie sessions
+│   └── env.js             tiny .env loader
+├── public/                the UI (index.html, styles.css, app.js)
 ├── data/
-│   ├── seed.json        starter projects (used only on first run)
-│   └── board.json       your live board (created on first run, git-ignored)
-├── .vscode/launch.json  press F5 in VS Code to run
-├── .gitignore
+│   ├── seed.json          starter projects for a brand-new board
+│   ├── board.json         local-mode board (git-ignored)
+│   └── snippets/          local-mode snippets (git-ignored)
+├── .env.example           copy to .env for GitHub mode
+├── .vscode/launch.json    press F5 to run
 ├── LICENSE
 └── README.md
 ```
 
 ## Troubleshooting
 
-- **"Could not reach the server" in the browser** — the terminal running
-  `npm start` was closed or crashed. Start it again.
-- **Port already in use** — something else is on 4317. Run on another port:
-  `PORT=8080 npm start`.
-- **`npm: command not found`** — Node isn't installed or isn't on your PATH.
-  Install it from [nodejs.org](https://nodejs.org).
+- **"Could not reach the server"**: the `npm start` terminal was closed or crashed.
+  Start it again.
+- **GitHub says "The redirect_uri is not associated with this application"**: the
+  Callback URL in your GitHub App doesn't exactly match `BASE_URL/auth/callback`.
+- **Stuck on "One-time setup" after creating the repo**: the app isn't installed on
+  that repo. Open `github.com/apps/<your-app-name>` → Configure → add `triage-data`.
+- **Server exits with "SESSION_SECRET must be set"**: generate one (see step 3).
+- **Port already in use**: `PORT=8080 npm start` (and update `BASE_URL` to match).
 
 ## License
 
-MIT — do whatever you like with it. See [LICENSE](LICENSE).
+MIT. See [LICENSE](LICENSE).

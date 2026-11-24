@@ -1,9 +1,15 @@
 # dependencies
 node_modules/
 
-# your personal board data — stays on your machine, never committed
+# secrets: GitHub App credentials + session secret
+.env
+.env.*
+!.env.example
+
+# your personal data in local mode. Stays on your machine, never committed.
 data/board.json
 data/board.json.tmp
+data/snippets/
 
 # OS / editor noise
 .DS_Store

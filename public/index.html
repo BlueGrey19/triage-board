@@ -8,18 +8,34 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Orbitron:wght@600;700;800&family=Chakra+Petch:wght@400;500;600;700&family=JetBrains+Mono:wght@500;600&display=swap">
 <link rel="stylesheet" href="styles.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js" defer></script>
 </head>
 <body>
 <div class="wrap">
   <header class="head">
-    <p class="kicker">Priority triage · saved locally</p>
+    <div class="toprow">
+      <p class="kicker" id="kicker">Priority triage · saved locally</p>
+      <div class="who" id="who" hidden>
+        <img id="whoAvatar" alt="" width="22" height="22">
+        <a id="whoRepo" target="_blank" rel="noopener"></a>
+        <form method="post" action="/auth/logout"><button class="mini" type="submit">Sign out</button></form>
+      </div>
+    </div>
     <h1>Triage Board</h1>
-    <div class="prog">
+    <nav class="tabs" role="tablist" id="tabs">
+      <button role="tab" data-tab="board" aria-selected="true">Board</button>
+      <button role="tab" data-tab="snippets" aria-selected="false">Snippets</button>
+    </nav>
+    <div class="prog" id="progRow">
       <div class="progbar"><i id="barFill"></i></div>
       <div class="progtxt"><b id="doneN">0</b> of <b id="totN">0</b> done · <span id="leftN">0</span> left</div>
     </div>
   </header>
 
+  <!-- Sign-in / first-run setup (GitHub mode) -->
+  <section class="gate" id="gate" hidden></section>
+
+  <div id="boardView">
   <div class="controls">
     <div class="controls-in">
       <!-- Row 1: projects -->
@@ -44,6 +60,23 @@
   </div>
 
   <main id="board"><p class="empty">Loading…</p></main>
+  </div>
+
+  <div id="snippetsView" hidden>
+    <div class="controls">
+      <div class="controls-in">
+        <div class="row">
+          <input class="search" id="snipSearch" type="search" placeholder="Search snippets…  (press / )" autocomplete="off" aria-label="Search snippets">
+          <button class="addbtn" id="snipAdd">+ New snippet</button>
+        </div>
+        <div class="row">
+          <span class="rowlab">Tags</span>
+          <div class="seg-row" id="tagFilters"></div>
+        </div>
+      </div>
+    </div>
+    <main id="snips"><p class="empty">Loading…</p></main>
+  </div>
 </div>
 
 <!-- Add / edit item modal -->
@@ -90,6 +123,37 @@
   </div>
 </div>
 
-<script src="app.js"></script>
+<!-- Add / edit snippet modal -->
+<div class="modal-bg" id="snipBg">
+  <div class="modal wide" role="dialog" aria-modal="true" aria-labelledby="sTitle">
+    <h2 id="sTitle">New snippet</h2>
+    <p class="merr" id="sErr"></p>
+    <div class="fld"><label for="sTitleIn">Title</label><input id="sTitleIn" placeholder="e.g. Books API: create invoice" maxlength="120"></div>
+    <div class="frow">
+      <div class="fld"><label for="sLang">Language</label>
+        <select id="sLang">
+          <option value="deluge">Deluge</option>
+          <option value="javascript">JavaScript</option>
+          <option value="json">JSON</option>
+          <option value="sql">SQL</option>
+          <option value="python">Python</option>
+          <option value="html">HTML</option>
+          <option value="css">CSS</option>
+          <option value="bash">Shell</option>
+          <option value="plaintext">Plain text</option>
+        </select>
+      </div>
+      <div class="fld"><label for="sTags">Tags <span class="opt">(comma separated)</span></label><input id="sTags" list="tagList" placeholder="books, api, dates"><datalist id="tagList"></datalist></div>
+    </div>
+    <div class="fld"><label for="sDesc">Description <span class="opt">(optional)</span></label><textarea id="sDesc" placeholder="When to use it, gotchas, which clients" maxlength="4000"></textarea></div>
+    <div class="fld"><label for="sCode">Code</label><textarea id="sCode" class="code-in" spellcheck="false" placeholder="Paste the snippet here"></textarea></div>
+    <div class="macts">
+      <button class="mbtn" id="sCancel">Cancel</button>
+      <button class="mbtn primary" id="sSave">Save snippet</button>
+    </div>
+  </div>
+</div>
+
+<script src="app.js" defer></script>
 </body>
 </html>

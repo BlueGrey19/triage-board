@@ -1,184 +1,345 @@
 /**
- * Triage Board — local server.
+ * Triage Board — server.
  *
- * Serves the board UI and a tiny REST API backed by a single JSON file
- * (data/board.json). Every change the UI makes is written straight to that
- * file, so if you close the server and start it again your board is exactly
- * as you left it.
+ * Serves the UI and a small REST API for the triage board and the snippet
+ * library. Storage depends on configuration:
  *
- * No database, no cloud, no accounts. Your data never leaves your machine.
+ *   Local mode (default)   no login; data lives in data/board.json and
+ *                          data/snippets/*.md on this machine.
+ *   GitHub mode            "Sign in with GitHub" via a GitHub App; each user's
+ *                          data lives in their own private repo
+ *                          (board.json + snippets/*.md), versioned by git.
+ *
+ * GitHub mode switches on when GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET are
+ * set (in .env or the environment). See README.md for setup.
  */
 
-const express = require('express');
-const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
+const fs = require('fs');
+const express = require('express');
+
+require('./lib/env').loadEnv(path.join(__dirname, '.env'));
+
+const {
+  HttpError, SNIPPET_ID_RE, normalizeBoard, oneLine, sanitizeItem, sanitizeSnippet
+} = require('./lib/model');
+const { GitHubError, request, authorizeUrl, exchangeCode, refreshToken } = require('./lib/github');
+const { parseCookies, serializeCookie, createSealer } = require('./lib/session');
+const { createLocalStore } = require('./lib/store-local');
+const { createGithubStore } = require('./lib/store-github');
+
+/* ---------- config ---------- */
+
+const PORT = Number(process.env.PORT) || 4317;
+const BASE_URL = (process.env.BASE_URL || 'http://localhost:' + PORT).replace(/\/+$/, '');
+const CLIENT_ID = process.env.GITHUB_CLIENT_ID || '';
+const CLIENT_SECRET = process.env.GITHUB_CLIENT_SECRET || '';
+const APP_SLUG = process.env.GITHUB_APP_SLUG || '';
+const DATA_REPO = process.env.DATA_REPO || 'triage-data';
+const SESSION_SECRET = process.env.SESSION_SECRET || '';
+const ALLOWED_USERS = (process.env.ALLOWED_USERS || '')
+  .split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
+
+const MODE = CLIENT_ID && CLIENT_SECRET ? 'github' : 'local';
+const SECURE_COOKIES = BASE_URL.startsWith('https://');
+const REDIRECT_URI = BASE_URL + '/auth/callback';
+const SESSION_COOKIE = 'tb_session';
+const STATE_COOKIE = 'tb_oauth_state';
+
+if (MODE === 'github' && SESSION_SECRET.length < 32) {
+  console.error('\n  SESSION_SECRET must be set (32+ random characters) when GitHub login is enabled.');
+  console.error('  Generate one with:  node -e "console.log(require(\'crypto\').randomBytes(32).toString(\'hex\'))"\n');
+  process.exit(1);
+}
+
+const DATA_DIR = process.env.DATA_DIR ? path.resolve(process.env.DATA_DIR) : path.join(__dirname, 'data');
+const SEED = (() => {
+  try { return normalizeBoard(JSON.parse(fs.readFileSync(path.join(__dirname, 'data', 'seed.json'), 'utf8'))); }
+  catch (_) { return normalizeBoard(null); }
+})();
+
+const localStore = MODE === 'local' ? createLocalStore({ dataDir: DATA_DIR, seed: SEED }) : null;
+const sealer = MODE === 'github' ? createSealer(SESSION_SECRET) : null;
+
+/* ---------- app ---------- */
 
 const app = express();
-const PORT = process.env.PORT || 4317;
-
-const DATA_DIR = path.join(__dirname, 'data');
-const DATA_FILE = path.join(DATA_DIR, 'board.json');
-const SEED_FILE = path.join(DATA_DIR, 'seed.json');
-
+app.disable('x-powered-by');
 app.use(express.json({ limit: '2mb' }));
 app.use(express.static(path.join(__dirname, 'public')));
 
-/* ---------- persistence helpers ---------- */
+// Wrap async handlers so rejections reach the error handler (Express 4).
+const h = fn => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
 
-// The shape of the whole board. Kept deliberately simple.
-function emptyBoard() {
-  return {
-    // Projects the user is working on. These populate the "Project" dropdown
-    // when creating a new item, and the project filter row.
-    projects: ['Milltrans', 'Cradle Tech', 'RMI'],
-    // Task items.
-    items: [],
-    // Bumped whenever we write, handy for debugging / future sync.
-    updatedAt: null
-  };
+/* ---------- sessions (GitHub mode) ---------- */
+
+function setSession(res, s) {
+  res.append('Set-Cookie', serializeCookie(SESSION_COOKIE, sealer.seal(s), {
+    maxAge: 60 * 60 * 24 * 30, secure: SECURE_COOKIES
+  }));
+}
+function clearSession(res) {
+  res.append('Set-Cookie', serializeCookie(SESSION_COOKIE, '', { maxAge: 0, secure: SECURE_COOKIES }));
 }
 
-function ensureData() {
-  if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
-  if (!fs.existsSync(DATA_FILE)) {
-    // Prefer a seed file if one ships with the repo; else start empty.
-    let initial = emptyBoard();
-    if (fs.existsSync(SEED_FILE)) {
-      try { initial = JSON.parse(fs.readFileSync(SEED_FILE, 'utf8')); }
-      catch (e) { console.warn('seed.json unreadable, starting empty:', e.message); }
+// Refresh tokens are single-use. If the page fires several requests right as
+// the access token expires, share one refresh between them.
+const refreshing = new Map();
+function refreshOnce(rt) {
+  if (!refreshing.has(rt)) {
+    const p = refreshToken({ clientId: CLIENT_ID, clientSecret: CLIENT_SECRET, refreshToken: rt });
+    refreshing.set(rt, p);
+    p.catch(() => {}).finally(() => setTimeout(() => refreshing.delete(rt), 60000));
+  }
+  return refreshing.get(rt);
+}
+
+async function getSession(req, res) {
+  if (req.session !== undefined) return req.session;
+  let s = sealer.unseal(parseCookies(req.headers.cookie)[SESSION_COOKIE]);
+  if (s && s.e && s.e < Date.now() + 60000) {
+    try {
+      if (!s.r) throw new Error('no refresh token');
+      const t = await refreshOnce(s.r);
+      s = { ...s, t: t.accessToken, r: t.refreshToken || s.r, e: t.expiresAt };
+      setSession(res, s);
+    } catch (_) {
+      s = null;
+      clearSession(res);
     }
-    writeBoard(initial);
-    console.log('Created a fresh board at', DATA_FILE);
   }
+  req.session = s;
+  return s;
 }
 
-function readBoard() {
+/* ---------- auth routes ---------- */
+
+app.get('/auth/login', (req, res) => {
+  if (MODE !== 'github') return res.redirect('/');
+  const state = crypto.randomBytes(16).toString('hex');
+  res.append('Set-Cookie', serializeCookie(STATE_COOKIE, state, { maxAge: 600, secure: SECURE_COOKIES }));
+  res.redirect(authorizeUrl({ clientId: CLIENT_ID, redirectUri: REDIRECT_URI, state }));
+});
+
+app.get('/auth/callback', h(async (req, res) => {
+  if (MODE !== 'github') return res.redirect('/');
+  const { code, state, error } = req.query;
+  const expected = parseCookies(req.headers.cookie)[STATE_COOKIE];
+  res.append('Set-Cookie', serializeCookie(STATE_COOKIE, '', { maxAge: 0, secure: SECURE_COOKIES }));
+  if (error) return res.redirect('/');
+  if (!code || !state || state !== expected) {
+    return res.status(400).send(authErrorPage('The login link expired or was tampered with.'));
+  }
   try {
-    const b = JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
-    // defensive defaults so an older/hand-edited file still loads
-    if (!Array.isArray(b.projects)) b.projects = emptyBoard().projects;
-    if (!Array.isArray(b.items)) b.items = [];
-    return b;
+    const t = await exchangeCode({ clientId: CLIENT_ID, clientSecret: CLIENT_SECRET, code: String(code), redirectUri: REDIRECT_URI });
+    const user = await request(t.accessToken, 'GET', '/user');
+    if (ALLOWED_USERS.length && !ALLOWED_USERS.includes(String(user.login).toLowerCase())) {
+      return res.status(403).send(authErrorPage('This board is private. @' + user.login + ' is not on the allowed list.'));
+    }
+    setSession(res, { login: user.login, a: user.avatar_url, t: t.accessToken, r: t.refreshToken, e: t.expiresAt });
+    res.redirect('/');
   } catch (e) {
-    console.error('Could not read board.json, returning empty board:', e.message);
-    return emptyBoard();
+    console.error('Login failed:', e.message);
+    res.status(400).send(authErrorPage('GitHub did not accept the login (' + e.message + ').'));
   }
+}));
+
+app.post('/auth/logout', (req, res) => {
+  if (MODE === 'github') clearSession(res);
+  res.redirect('/');
+});
+
+function authErrorPage(msg) {
+  const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+  return '<!doctype html><meta charset="utf-8"><title>Login failed</title>' +
+    '<body style="background:#0d0b14;color:#eae6f5;font-family:system-ui;padding:40px">' +
+    '<h1>Login failed</h1><p>' + esc(msg) + '</p><p><a style="color:#b388ff" href="/">Back to the board</a></p></body>';
 }
 
-// Atomic write: write to a temp file then rename, so a crash mid-write
-// can never leave you with a half-written, corrupt board.json.
-function writeBoard(board) {
-  board.updatedAt = new Date().toISOString();
-  if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
-  const tmp = DATA_FILE + '.tmp';
-  fs.writeFileSync(tmp, JSON.stringify(board, null, 2), 'utf8');
-  fs.renameSync(tmp, DATA_FILE);
-  return board;
-}
+/* ---------- API plumbing ---------- */
 
-/* ---------- validation ---------- */
+// Mutating API calls must carry a custom header. Browsers won't send one
+// cross-site without a CORS preflight (which we never approve), so this
+// blocks CSRF on top of the SameSite=Lax cookie.
+app.use('/api', (req, res, next) => {
+  if (req.method !== 'GET' && req.get('X-Triage') !== '1') {
+    return res.status(403).json({ error: 'Missing X-Triage header.' });
+  }
+  next();
+});
 
-const PRIOS = ['critical', 'high', 'medium', 'low'];
-const STATUSES = ['open', 'doing', 'blocked', 'done'];
+app.get('/api/session', h(async (req, res) => {
+  if (MODE === 'local') return res.json({ mode: 'local', signedIn: true, ready: true, storage: 'this computer' });
+  const s = await getSession(req, res);
+  if (!s) return res.json({ mode: 'github', signedIn: false });
 
-function newId() {
-  return 'i-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 6);
-}
-
-function cleanStr(v, max) {
-  if (typeof v !== 'string') return '';
-  return v.trim().slice(0, max || 200);
-}
-
-// Coerce whatever the client sent into a valid item we're willing to store.
-function sanitizeItem(raw, existing) {
-  const it = existing ? { ...existing } : {
-    id: newId(), createdAt: new Date().toISOString()
+  const out = {
+    mode: 'github', signedIn: true,
+    user: { login: s.login, avatar: s.a },
+    repo: s.login + '/' + DATA_REPO,
+    ready: false,
+    newRepoUrl: 'https://github.com/new?name=' + encodeURIComponent(DATA_REPO) + '&visibility=private',
+    installUrl: APP_SLUG ? 'https://github.com/apps/' + encodeURIComponent(APP_SLUG) + '/installations/new' : null
   };
-  if ('title' in raw)   it.title   = cleanStr(raw.title, 200);
-  if ('project' in raw) it.project = cleanStr(raw.project, 80);
-  if ('group' in raw)   it.group   = cleanStr(raw.group, 80);
-  if ('note' in raw)    it.note    = cleanStr(raw.note, 800);
-  if ('prio' in raw)    it.prio    = PRIOS.includes(raw.prio) ? raw.prio : (it.prio || 'medium');
-  if ('status' in raw)  it.status  = STATUSES.includes(raw.status) ? raw.status : (it.status || 'open');
-  // fill defaults on create
-  if (!it.prio)   it.prio = 'medium';
-  if (!it.status) it.status = 'open';
-  if (it.group == null)   it.group = '';
-  if (it.note == null)    it.note = '';
-  if (it.project == null) it.project = '';
-  return it;
+  try {
+    const r = await request(s.t, 'GET', '/repos/' + encodeURIComponent(s.login) + '/' + encodeURIComponent(DATA_REPO));
+    out.ready = true;
+    out.repoPrivate = !!r.private;
+  } catch (e) {
+    if (e.status === 401) { clearSession(res); return res.json({ mode: 'github', signedIn: false }); }
+    if (e.status !== 404 && e.status !== 403) throw e;
+  }
+  res.json(out);
+}));
+
+// Attach the right storage backend for this request.
+const withStore = h(async (req, res, next) => {
+  if (MODE === 'local') { req.store = localStore; return next(); }
+  const s = await getSession(req, res);
+  if (!s) throw new HttpError(401, 'Sign in with GitHub to continue.', 'auth');
+  req.store = createGithubStore({ token: s.t, owner: s.login, repo: DATA_REPO, seed: SEED });
+  next();
+});
+app.use('/api', withStore);
+
+/* ---------- board API ---------- */
+
+app.get('/api/board', h(async (req, res) => {
+  res.json(await req.store.getBoard());
+}));
+
+app.post('/api/projects', h(async (req, res) => {
+  const name = oneLine(req.body && req.body.name, 80);
+  if (!name) throw new HttpError(400, 'Project name required.');
+  const board = await req.store.mutateBoard(b => {
+    if (b.projects.some(p => p.toLowerCase() === name.toLowerCase())) {
+      throw new HttpError(409, 'That project already exists.');
+    }
+    b.projects.push(name);
+    return b;
+  }, 'Add project: ' + name);
+  res.json(board);
+}));
+
+app.delete('/api/projects/:name', h(async (req, res) => {
+  const name = req.params.name;
+  // Items keep their project label even if the project is removed from the
+  // list, so nothing is silently lost.
+  const board = await req.store.mutateBoard(b => {
+    b.projects = b.projects.filter(p => p !== name);
+    return b;
+  }, 'Remove project: ' + name);
+  res.json(board);
+}));
+
+app.post('/api/items', h(async (req, res) => {
+  const body = req.body || {};
+  if (!oneLine(body.title, 200)) throw new HttpError(400, 'Title required.');
+  const item = sanitizeItem(body, null);
+  await req.store.mutateBoard(b => { b.items.push(item); }, 'Add item: ' + item.title);
+  res.json(item);
+}));
+
+app.patch('/api/items/:id', h(async (req, res) => {
+  const item = await req.store.mutateBoard(b => {
+    const idx = b.items.findIndex(i => i.id === req.params.id);
+    if (idx < 0) throw new HttpError(404, 'Item not found.');
+    b.items[idx] = sanitizeItem(req.body || {}, b.items[idx]);
+    return b.items[idx];
+  }, 'Update item');
+  res.json(item);
+}));
+
+app.delete('/api/items/:id', h(async (req, res) => {
+  await req.store.mutateBoard(b => {
+    const it = b.items.find(i => i.id === req.params.id);
+    if (!it) throw new HttpError(404, 'Item not found.');
+    b.items = b.items.filter(i => i !== it);
+  }, 'Delete item');
+  res.json({ ok: true });
+}));
+
+/* ---------- snippets API ---------- */
+
+function snippetId(req) {
+  const id = String(req.params.id || '');
+  if (!SNIPPET_ID_RE.test(id)) throw new HttpError(400, 'Bad snippet id.');
+  return id;
 }
 
-/* ---------- API ---------- */
+app.get('/api/snippets', h(async (req, res) => {
+  const list = await req.store.listSnippets();
+  list.sort((a, b) => String(b.updated).localeCompare(String(a.updated)));
+  res.json(list);
+}));
 
-// Whole board (projects + items).
-app.get('/api/board', (req, res) => {
-  res.json(readBoard());
-});
-
-// --- Projects ---
-app.post('/api/projects', (req, res) => {
-  const name = cleanStr(req.body && req.body.name, 80);
-  if (!name) return res.status(400).json({ error: 'Project name required.' });
-  const board = readBoard();
-  if (board.projects.some(p => p.toLowerCase() === name.toLowerCase())) {
-    return res.status(409).json({ error: 'That project already exists.' });
-  }
-  board.projects.push(name);
-  writeBoard(board);
-  res.json(board);
-});
-
-app.delete('/api/projects/:name', (req, res) => {
-  const name = decodeURIComponent(req.params.name);
-  const board = readBoard();
-  board.projects = board.projects.filter(p => p !== name);
-  // Items keep their project label even if the project is removed from the list,
-  // so nothing is silently lost. They just won't have a matching filter chip.
-  writeBoard(board);
-  res.json(board);
-});
-
-// --- Items ---
-app.post('/api/items', (req, res) => {
+app.post('/api/snippets', h(async (req, res) => {
   const body = req.body || {};
-  if (!cleanStr(body.title, 200)) return res.status(400).json({ error: 'Title required.' });
-  const board = readBoard();
-  const item = sanitizeItem(body, null);
-  board.items.push(item);
-  writeBoard(board);
-  res.json(item);
-});
+  if (!oneLine(body.title, 120)) throw new HttpError(400, 'Title required.');
+  const s = sanitizeSnippet(body, null);
+  await req.store.putSnippet(s, null, 'Add snippet: ' + s.title);
+  res.json(s);
+}));
 
-app.patch('/api/items/:id', (req, res) => {
-  const board = readBoard();
-  const idx = board.items.findIndex(i => i.id === req.params.id);
-  if (idx < 0) return res.status(404).json({ error: 'Item not found.' });
-  board.items[idx] = sanitizeItem(req.body || {}, board.items[idx]);
-  writeBoard(board);
-  res.json(board.items[idx]);
-});
+app.patch('/api/snippets/:id', h(async (req, res) => {
+  const id = snippetId(req);
+  const found = await req.store.getSnippet(id);
+  if (!found) throw new HttpError(404, 'Snippet not found.');
+  const s = sanitizeSnippet(req.body || {}, found.snippet);
+  s.id = id;
+  if (!s.title) throw new HttpError(400, 'Title required.');
+  await req.store.putSnippet(s, found.version, 'Update snippet: ' + s.title);
+  res.json(s);
+}));
 
-app.delete('/api/items/:id', (req, res) => {
-  const board = readBoard();
-  const before = board.items.length;
-  board.items = board.items.filter(i => i.id !== req.params.id);
-  if (board.items.length === before) return res.status(404).json({ error: 'Item not found.' });
-  writeBoard(board);
+app.delete('/api/snippets/:id', h(async (req, res) => {
+  const id = snippetId(req);
+  const ok = await req.store.deleteSnippet(id, 'Delete snippet: ' + id);
+  if (!ok) throw new HttpError(404, 'Snippet not found.');
   res.json({ ok: true });
+}));
+
+/* ---------- errors ---------- */
+
+app.use((err, req, res, next) => { // eslint-disable-line no-unused-vars
+  if (err instanceof HttpError) {
+    return res.status(err.status).json({ error: err.message, code: err.code });
+  }
+  if (err instanceof GitHubError) {
+    if (err.status === 401) {
+      if (MODE === 'github') clearSession(res);
+      return res.status(401).json({ error: 'Your GitHub session expired. Sign in again.', code: 'auth' });
+    }
+    if (err.status === 403 || err.status === 404) {
+      return res.status(409).json({
+        error: 'Can\'t write to your ' + DATA_REPO + ' repo. Check it exists and the app is installed on it.',
+        code: 'setup'
+      });
+    }
+    if (err.status === 409) return res.status(409).json({ error: err.message });
+    console.error('GitHub error:', err.status, err.message);
+    return res.status(502).json({ error: 'GitHub error: ' + err.message });
+  }
+  if (err && err.type === 'entity.parse.failed') return res.status(400).json({ error: 'Invalid JSON.' });
+  console.error(err);
+  res.status(500).json({ error: 'Something went wrong on the server.' });
 });
 
 /* ---------- boot ---------- */
 
-ensureData();
 app.listen(PORT, () => {
   console.log('');
   console.log('  Triage Board is running.');
-  console.log('  Open  ->  http://localhost:' + PORT);
-  console.log('  Data  ->  ' + DATA_FILE);
+  console.log('  Open     ->  ' + BASE_URL);
+  if (MODE === 'local') {
+    console.log('  Storage  ->  local files in ' + DATA_DIR);
+    console.log('               (set GITHUB_CLIENT_ID / GITHUB_CLIENT_SECRET to store in GitHub instead)');
+  } else {
+    console.log('  Storage  ->  GitHub: each user\'s private "' + DATA_REPO + '" repo');
+    console.log('  Callback ->  ' + REDIRECT_URI + '   (must match your GitHub App settings)');
+  }
   console.log('');
-  console.log('  Leave this window open while you use the board.');
   console.log('  Press Ctrl+C here to stop the server.');
   console.log('');
 });
