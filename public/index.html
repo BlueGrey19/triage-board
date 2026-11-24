@@ -48,6 +48,12 @@
           <div id="navPrios"></div>
           <p class="nav-label">Projects <button class="nav-manage" id="manageProj" title="Add or remove projects">Manage</button></p>
           <div id="navProjects"></div>
+          <p class="nav-label" id="navGroupsLabel" hidden>
+            <button class="nav-fold" id="navGroupsToggle" aria-expanded="false" aria-controls="navGroups">
+              Groups <svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="6 9 12 15 18 9"/></svg>
+            </button>
+          </p>
+          <div id="navGroups" hidden></div>
         </div>
       </div>
 
@@ -110,16 +116,24 @@
 
     <!-- ---------- Board ---------- -->
     <section id="boardView" class="view">
-      <div class="hero">
+      <div class="hero board-hero">
         <div class="hero-main">
-          <p class="kicker"><span id="boardKicker">Board</span> <span class="live" id="syncPill"><i></i><span id="syncTxt">Saved locally</span></span></p>
-          <h1 id="boardTitle">All items</h1>
-          <div class="summary">
-            <div class="progbar"><i id="barFill"></i></div>
-            <span class="progtxt"><b id="doneN">0</b> of <b id="totN">0</b> done · <b id="leftN">0</b> left</span>
+          <div class="title-row">
+            <h1 id="boardTitle">All items</h1>
+            <span class="live" id="syncPill"><i></i><span id="syncTxt">Saved locally</span></span>
           </div>
+          <div class="active-filters" id="activeFilters" hidden></div>
         </div>
-        <div class="hero-acts">
+        <div class="hero-tools">
+          <div class="search-wrap board-search">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
+            <input class="search" id="boardSearch" type="search" placeholder="Search items…" autocomplete="off" aria-label="Search items">
+            <kbd>/</kbd>
+          </div>
+          <button class="tool-btn" id="groupFilter" aria-haspopup="menu" aria-expanded="false" title="Filter by group">
+            <span class="tool-hash" aria-hidden="true">#</span><span id="groupFilterLab">All groups</span>
+            <svg class="sel-chev" viewBox="0 0 24 24" aria-hidden="true"><polyline points="6 9 12 15 18 9"/></svg>
+          </button>
           <div class="seg-toggle" role="group" aria-label="Board layout" id="layoutSw">
             <button data-layout="cards" aria-pressed="true" title="Card view">
               <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg><span>Cards</span>
@@ -132,9 +146,14 @@
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>Add item
           </button>
         </div>
+        <div class="hero-foot">
+          <div class="summary">
+            <div class="progbar"><i id="barFill"></i></div>
+            <span class="progtxt"><b id="doneN">0</b> of <b id="totN">0</b> done <span class="pct" id="donePct">0%</span> · <b id="leftN">0</b> left</span>
+          </div>
+          <div class="stats" id="stats" role="group" aria-label="Filter by status"></div>
+        </div>
       </div>
-
-      <div class="stats" id="stats" role="group" aria-label="Filter by status"></div>
 
       <main id="board" class="board"><p class="empty">Loading…</p></main>
     </section>
@@ -236,8 +255,9 @@
           <option value="plaintext">Plain text</option>
         </select>
       </div>
-      <div class="fld"><label for="sTags">Tags <span class="opt">(comma separated)</span></label><input id="sTags" placeholder="books, api, dates" autocomplete="off"></div>
+      <div class="fld"><label for="sType">Used in <span class="opt">(optional)</span></label><input id="sType" placeholder="e.g. Workflow function, Webhook" maxlength="40" autocomplete="off"></div>
     </div>
+    <div class="fld"><label for="sTags">Tags <span class="opt">(comma separated)</span></label><input id="sTags" placeholder="books, api, dates" autocomplete="off"></div>
     <div class="fld"><label for="sDesc">Description <span class="opt">(optional)</span></label><textarea id="sDesc" placeholder="When to use it, gotchas, which clients" maxlength="4000"></textarea></div>
     <div class="fld"><label for="sCode">Code</label><textarea id="sCode" class="code-in" spellcheck="false" placeholder="Paste the snippet here"></textarea></div>
     <div class="macts">
