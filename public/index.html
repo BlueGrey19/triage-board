@@ -181,7 +181,7 @@
     <div class="frow">
       <div class="fld"><label for="mProj">Project</label><select id="mProj"></select></div>
       <div class="fld"><label for="mPrio">Priority</label>
-        <select id="mPrio">
+        <select id="mPrio" data-dots="prio">
           <option value="critical">Critical</option>
           <option value="high">High</option>
           <option value="medium" selected>Medium</option>
@@ -189,7 +189,7 @@
         </select>
       </div>
     </div>
-    <div class="fld"><label for="mGroup">Group / area <span class="opt">(optional)</span></label><input id="mGroup" list="groupList" placeholder="e.g. Books, Analytics, Truck" maxlength="80"><datalist id="groupList"></datalist></div>
+    <div class="fld"><label for="mGroup">Group / area <span class="opt">(optional)</span></label><input id="mGroup" placeholder="e.g. Books, Analytics, Truck" maxlength="80" autocomplete="off"></div>
     <div class="fld"><label for="mNote">Description <span class="opt">(optional, shown when you open the card)</span></label><textarea id="mNote" placeholder="Any detail you want on the card" maxlength="800" rows="4"></textarea></div>
     <div class="macts">
       <button class="btn" id="mCancel">Cancel</button>
@@ -236,7 +236,7 @@
           <option value="plaintext">Plain text</option>
         </select>
       </div>
-      <div class="fld"><label for="sTags">Tags <span class="opt">(comma separated)</span></label><input id="sTags" list="tagList" placeholder="books, api, dates"><datalist id="tagList"></datalist></div>
+      <div class="fld"><label for="sTags">Tags <span class="opt">(comma separated)</span></label><input id="sTags" placeholder="books, api, dates" autocomplete="off"></div>
     </div>
     <div class="fld"><label for="sDesc">Description <span class="opt">(optional)</span></label><textarea id="sDesc" placeholder="When to use it, gotchas, which clients" maxlength="4000"></textarea></div>
     <div class="fld"><label for="sCode">Code</label><textarea id="sCode" class="code-in" spellcheck="false" placeholder="Paste the snippet here"></textarea></div>
@@ -247,7 +247,22 @@
   </div>
 </div>
 
-<!-- Shared popover menu (status / card actions) -->
+<!-- Confirm dialog (replaces the browser's confirm()) -->
+<div class="modal-bg" id="confirmBg">
+  <div class="modal confirm" role="alertdialog" aria-modal="true" aria-labelledby="cTitle" aria-describedby="cMsg">
+    <div class="c-ico" aria-hidden="true">
+      <svg viewBox="0 0 24 24"><path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6M10 11v6M14 11v6"/></svg>
+    </div>
+    <h2 id="cTitle">Delete?</h2>
+    <p class="c-msg" id="cMsg"></p>
+    <div class="macts">
+      <button class="btn" id="cCancel">Cancel</button>
+      <button class="btn danger-solid" id="cOk">Delete</button>
+    </div>
+  </div>
+</div>
+
+<!-- Shared popover menu (status / card actions / dropdowns) -->
 <div class="pop" id="pop" role="menu" hidden></div>
 
 <script src="app.js" defer></script>

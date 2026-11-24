@@ -218,7 +218,6 @@
     }
 
     renderNav();
-    refreshGroupDatalist();
     if (detailId) renderDetail();
   }
 
@@ -317,35 +316,61 @@
     api('DELETE', '/api/items/' + id).then(loadBoard).catch(function (e) { toast(e.message); });
   }
   function confirmDelete(id) {
-    var it = itemById(id);
-    if (it && confirm('Delete "' + it.title + '"?')) { closeDetail(); deleteItem(id); }
+    var it = itemById(id); if (!it) return;
+    confirmDialog({ title: 'Delete this item?', message: '“' + it.title + '” will be removed from the board.' })
+      .then(function (ok) { if (ok) { closeDetail(); deleteItem(id); } });
   }
 
   /* ---------- popover menu ---------- */
   var popEl = document.getElementById('pop');
   var popAnchor = null, popHandler = null;
-  function openPop(anchor, html, handler) {
+  // opts.matchWidth: at least as wide as the anchor (used by dropdowns).
+  function openPop(anchor, html, handler, opts) {
+    opts = opts || {};
     closePop();
     popEl.innerHTML = html; popEl.hidden = false;
     popAnchor = anchor; popHandler = handler;
     anchor.setAttribute('aria-expanded', 'true');
-    var r = anchor.getBoundingClientRect(), pw = popEl.offsetWidth, ph = popEl.offsetHeight;
+    var r = anchor.getBoundingClientRect();
+    popEl.style.minWidth = opts.matchWidth ? r.width + 'px' : '';
+    var pw = popEl.offsetWidth, ph = popEl.offsetHeight;
     var left = Math.min(Math.max(8, r.left), window.innerWidth - pw - 8);
     var top = r.bottom + 6;
     if (top + ph > window.innerHeight - 8) top = Math.max(8, r.top - ph - 6);
     popEl.style.left = left + 'px'; popEl.style.top = top + 'px';
-    var first = popEl.querySelector('button'); if (first) first.focus({ preventScroll: true });
+    var start = popEl.querySelector('button[aria-checked="true"]') || popEl.querySelector('button');
+    if (start) start.focus({ preventScroll: true });
   }
-  function closePop() {
+  function closePop(restoreFocus) {
     if (popEl.hidden) return false;
+    var anchor = popAnchor;
     popEl.hidden = true; popEl.innerHTML = '';
-    if (popAnchor) popAnchor.setAttribute('aria-expanded', 'false');
+    if (anchor) anchor.setAttribute('aria-expanded', 'false');
     popAnchor = null; popHandler = null;
+    if (restoreFocus && anchor && document.contains(anchor)) anchor.focus({ preventScroll: true });
     return true;
   }
   popEl.addEventListener('click', function (e) {
     var b = e.target.closest('button'); if (!b || !popHandler) return;
-    var h = popHandler; closePop(); h(b.dataset);
+    var h = popHandler; closePop(true); h(b.dataset);
+  });
+  // Keyboard: arrows / Home / End move, a letter jumps to the next match, Tab closes.
+  popEl.addEventListener('keydown', function (e) {
+    var btns = Array.prototype.slice.call(popEl.querySelectorAll('button'));
+    var i = btns.indexOf(document.activeElement), next = -1;
+    if (e.key === 'ArrowDown') next = (i + 1) % btns.length;
+    else if (e.key === 'ArrowUp') next = (i - 1 + btns.length) % btns.length;
+    else if (e.key === 'Home') next = 0;
+    else if (e.key === 'End') next = btns.length - 1;
+    else if (e.key === 'Tab') { closePop(true); e.preventDefault(); return; }
+    else if (e.key.length === 1 && /\S/.test(e.key)) {
+      var k = e.key.toLowerCase();
+      for (var n = 1; n <= btns.length; n++) {
+        var b = btns[(i + n) % btns.length];
+        if (b.textContent.trim().toLowerCase().indexOf(k) === 0) { next = (i + n) % btns.length; break; }
+      }
+    }
+    if (next >= 0) { e.preventDefault(); btns[next].focus(); }
   });
   document.addEventListener('click', function (e) {
     if (!popEl.hidden && !popEl.contains(e.target) && e.target !== popAnchor && !(popAnchor && popAnchor.contains(e.target))) closePop();
@@ -366,6 +391,173 @@
       }).join('') +
       '<hr><button role="menuitem" class="danger" data-a="del">Delete</button>';
   }
+
+  /* ---------- styled dropdowns (#14) ----------
+   * The native <select> stays in the DOM (hidden) and keeps holding the value,
+   * so existing code can keep reading/writing sel.value. A button shows the
+   * current choice and opens the shared popover as the list.
+   */
+  var SEL_CHEV = '<svg class="sel-chev" viewBox="0 0 24 24" aria-hidden="true"><polyline points="6 9 12 15 18 9"/></svg>';
+  function selDot(sel, v) {
+    return sel.dataset.dots === 'prio' && PCOLOR[v] ? '<span class="pd" style="--c:' + PCOLOR[v] + '"></span>' : '';
+  }
+  function syncSelect(sel) {
+    if (!sel._btn) return;
+    var o = sel.options[sel.selectedIndex];
+    sel._btn.innerHTML = '<span class="sel-val">' + selDot(sel, sel.value) + esc(o ? o.text : '') + '</span>' + SEL_CHEV;
+  }
+  function enhanceSelect(sel) {
+    var btn = document.createElement('button');
+    btn.type = 'button'; btn.className = 'sel-btn'; btn.id = sel.id + 'Btn';
+    btn.setAttribute('aria-haspopup', 'menu'); btn.setAttribute('aria-expanded', 'false');
+    sel.hidden = true; sel.tabIndex = -1;
+    sel.parentNode.insertBefore(btn, sel.nextSibling);
+    var lab = document.querySelector('label[for="' + sel.id + '"]'); if (lab) lab.htmlFor = btn.id;
+    sel._btn = btn;
+    function open() {
+      if (popAnchor === btn) return closePop(true);
+      var html = Array.prototype.map.call(sel.options, function (o) {
+        return '<button role="menuitemradio" data-v="' + esc(o.value) + '" aria-checked="' + (o.value === sel.value) + '">' +
+          selDot(sel, o.value) + esc(o.text) + '</button>';
+      }).join('');
+      openPop(btn, html, function (d) {
+        sel.value = d.v; syncSelect(sel);
+        sel.dispatchEvent(new Event('change', { bubbles: true }));
+      }, { matchWidth: true });
+    }
+    btn.addEventListener('click', open);
+    btn.addEventListener('keydown', function (e) {
+      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { e.preventDefault(); open(); }
+    });
+    syncSelect(sel);
+  }
+  var SELECT_IDS = ['mProj', 'mPrio', 'sLang'];
+  SELECT_IDS.forEach(function (id) { enhanceSelect(document.getElementById(id)); });
+  function syncSelects() { SELECT_IDS.forEach(function (id) { syncSelect(document.getElementById(id)); }); }
+
+  /* ---------- suggestion list under a text field (#15) ----------
+   * Replaces <datalist>, which Edge draws as a detached floating box.
+   * multi = comma-separated field (tags): suggests for the last entry only.
+   */
+  function attachSuggest(input, getOptions, multi) {
+    var box = document.createElement('div');
+    box.className = 'suggest'; box.id = input.id + 'Sug'; box.hidden = true;
+    box.setAttribute('role', 'listbox');
+    input.parentNode.classList.add('has-suggest');
+    input.parentNode.appendChild(box);
+    input.setAttribute('role', 'combobox');
+    input.setAttribute('aria-autocomplete', 'list');
+    input.setAttribute('aria-expanded', 'false');
+    input.setAttribute('aria-controls', box.id);
+    var items = [], active = -1;
+
+    function parts() { return input.value.split(','); }
+    function query() { return (multi ? parts()[parts().length - 1] : input.value).trim().toLowerCase(); }
+    function alreadyUsed() {
+      return multi ? parts().slice(0, -1).map(function (s) { return s.trim().toLowerCase(); }) : [];
+    }
+    function highlight(o, q) {
+      var i = q ? o.toLowerCase().indexOf(q) : -1;
+      if (i < 0) return esc(o);
+      return esc(o.slice(0, i)) + '<b>' + esc(o.slice(i, i + q.length)) + '</b>' + esc(o.slice(i + q.length));
+    }
+    function show() {
+      var q = query(), used = alreadyUsed();
+      items = getOptions().filter(function (o) {
+        var l = o.toLowerCase();
+        return l.indexOf(q) >= 0 && l !== q && used.indexOf(l) < 0;
+      }).slice(0, 8);
+      if (!items.length) return hide();
+      active = -1;
+      box.innerHTML = items.map(function (o, i) {
+        return '<div class="sug" role="option" aria-selected="false" id="' + box.id + i + '" data-i="' + i + '">' + highlight(o, q) + '</div>';
+      }).join('');
+      box.hidden = false;
+      input.setAttribute('aria-expanded', 'true');
+      input.removeAttribute('aria-activedescendant');
+    }
+    function hide() {
+      box.hidden = true; box.innerHTML = ''; items = []; active = -1;
+      input.setAttribute('aria-expanded', 'false');
+      input.removeAttribute('aria-activedescendant');
+    }
+    function setActive(i) {
+      active = i;
+      Array.prototype.forEach.call(box.children, function (el, j) {
+        el.classList.toggle('on', j === i); el.setAttribute('aria-selected', String(j === i));
+      });
+      input.setAttribute('aria-activedescendant', box.id + i);
+      box.children[i].scrollIntoView({ block: 'nearest' });
+    }
+    function pick(i) {
+      var v = items[i]; if (v == null) return;
+      if (multi) {
+        var keep = parts().slice(0, -1).map(function (s) { return s.trim(); }).filter(Boolean);
+        keep.push(v);
+        input.value = keep.join(', ') + ', ';
+      } else {
+        input.value = v;
+      }
+      hide(); input.focus();
+    }
+    input.addEventListener('input', show);
+    input.addEventListener('focus', show);
+    input.addEventListener('blur', hide);
+    input.addEventListener('keydown', function (e) {
+      if (box.hidden) { if (e.key === 'ArrowDown') { show(); e.preventDefault(); } return; }
+      if (e.key === 'ArrowDown') { e.preventDefault(); setActive((active + 1) % items.length); }
+      else if (e.key === 'ArrowUp') { e.preventDefault(); setActive((active - 1 + items.length) % items.length); }
+      else if (e.key === 'Enter' && active >= 0) { e.preventDefault(); pick(active); }
+      else if (e.key === 'Escape') { e.stopPropagation(); hide(); } // close the list, not the window
+      else if (e.key === 'Tab') hide();
+    });
+    // mousedown (not click) so the input keeps focus and doesn't blur first
+    box.addEventListener('mousedown', function (e) {
+      var el = e.target.closest('.sug'); if (!el) return;
+      e.preventDefault(); pick(+el.dataset.i);
+    });
+  }
+  function uniqueSorted(list) {
+    var seen = {}, out = [];
+    list.forEach(function (v) { var k = v.toLowerCase(); if (v && !seen[k]) { seen[k] = 1; out.push(v); } });
+    return out.sort(function (a, b) { return a.localeCompare(b); });
+  }
+  attachSuggest(document.getElementById('mGroup'), function () {
+    return uniqueSorted(board.items.map(function (i) { return i.group || ''; }));
+  });
+  attachSuggest(document.getElementById('sTags'), function () {
+    var all = []; snippets.forEach(function (s) { all = all.concat(s.tags); });
+    return uniqueSorted(all);
+  }, true);
+
+  /* ---------- confirm dialog (#16) ---------- */
+  var confirmBg = document.getElementById('confirmBg');
+  var confirmResolve = null, confirmReturnFocus = null;
+  function confirmDialog(o) {
+    if (confirmResolve) closeConfirm(false);
+    document.getElementById('cTitle').textContent = o.title;
+    document.getElementById('cMsg').textContent = o.message || '';
+    document.getElementById('cOk').textContent = o.ok || 'Delete';
+    confirmReturnFocus = document.activeElement;
+    confirmBg.classList.add('open');
+    document.getElementById('cOk').focus(); // immediately, so an Enter right away goes to Delete
+    return new Promise(function (resolve) { confirmResolve = resolve; });
+  }
+  function closeConfirm(result) {
+    if (!confirmResolve) return false;
+    var resolve = confirmResolve; confirmResolve = null;
+    confirmBg.classList.remove('open');
+    if (confirmReturnFocus && document.contains(confirmReturnFocus)) confirmReturnFocus.focus({ preventScroll: true });
+    resolve(result);
+    return true;
+  }
+  document.getElementById('cOk').addEventListener('click', function () { closeConfirm(true); });
+  document.getElementById('cCancel').addEventListener('click', function () { closeConfirm(false); });
+  confirmBg.addEventListener('click', function (e) { if (e.target === confirmBg) closeConfirm(false); });
+  // Enter confirms unless Cancel has focus (then Enter activates Cancel as usual).
+  confirmBg.addEventListener('keydown', function (e) {
+    if (e.key === 'Enter' && document.activeElement.id !== 'cCancel') { e.preventDefault(); closeConfirm(true); }
+  });
 
   /* ---------- board interactions ---------- */
   boardEl.addEventListener('click', function (e) {
@@ -488,12 +680,6 @@
     sel.innerHTML = board.projects.map(function (p) { return '<option>' + esc(p) + '</option>'; }).join('')
       || '<option value="">(add a project first)</option>';
   }
-  function refreshGroupDatalist() {
-    var dl = document.getElementById('groupList'); if (!dl) return;
-    var seen = {}, opts = '';
-    board.items.forEach(function (i) { if (i.group && !seen[i.group]) { seen[i.group] = 1; opts += '<option value="' + esc(i.group) + '">'; } });
-    dl.innerHTML = opts;
-  }
   function openAdd(prio) {
     editingId = null;
     document.getElementById('mTitle').textContent = 'New item';
@@ -506,6 +692,7 @@
     fillProjectSelect(sel);
     if (filters.project !== 'all' && board.projects.indexOf(filters.project) >= 0) sel.value = filters.project;
     document.getElementById('mPrio').value = prio || (filters.prio !== 'all' ? filters.prio : 'medium');
+    syncSelects();
     modalBg.classList.add('open');
     setTimeout(function () { document.getElementById('mTitleIn').focus(); }, 30);
   }
@@ -521,6 +708,7 @@
     document.getElementById('mPrio').value = it.prio || 'medium';
     document.getElementById('mGroup').value = it.group || '';
     document.getElementById('mNote').value = it.note || '';
+    syncSelects();
     modalBg.classList.add('open');
     setTimeout(function () { document.getElementById('mTitleIn').focus(); }, 30);
   }
@@ -588,12 +776,14 @@
     var name = b.dataset.p;
     var n = board.items.filter(function (i) { return i.project === name; }).length;
     var msg = n > 0
-      ? 'Remove "' + name + '" from your project list?\n\nThe ' + n + ' item' + (n === 1 ? '' : 's') + ' tagged with it will stay on the board (still labelled "' + name + '").'
-      : 'Remove "' + name + '"?';
-    if (!confirm(msg)) return;
-    api('DELETE', '/api/projects/' + encodeURIComponent(name))
-      .then(function (bd) { board = bd; if (filters.project === name) filters.project = 'all'; renderProjList(); render(); })
-      .catch(function (e) { pErr.textContent = e.message; });
+      ? '“' + name + '” will be removed from your project list. The ' + n + ' item' + (n === 1 ? '' : 's') + ' tagged with it will stay on the board, still labelled “' + name + '”.'
+      : '“' + name + '” will be removed from your project list.';
+    confirmDialog({ title: 'Remove this project?', message: msg, ok: 'Remove' }).then(function (ok) {
+      if (!ok) return;
+      api('DELETE', '/api/projects/' + encodeURIComponent(name))
+        .then(function (bd) { board = bd; if (filters.project === name) filters.project = 'all'; renderProjList(); render(); })
+        .catch(function (e) { pErr.textContent = e.message; });
+    });
   });
 
   /* ---------- toast ---------- */
@@ -691,7 +881,6 @@
       chips += '<button class="tagbtn" data-tag="' + esc(t) + '" aria-pressed="' + (snipFilter.tag === t) + '">#' + esc(t) + ' <span class="c">' + counts[t] + '</span></button>';
     });
     document.getElementById('tagFilters').innerHTML = chips;
-    document.getElementById('tagList').innerHTML = tags.map(function (t) { return '<option value="' + esc(t) + '">'; }).join('');
 
     var vis = snippets.filter(snipMatches);
     if (!vis.some(function (s) { return s.id === selectedSnip; })) {
@@ -767,8 +956,9 @@
     } else if (act === 'sedit') {
       openSnip(s);
     } else if (act === 'sdel') {
-      if (!confirm('Delete snippet "' + s.title + '"?')) return;
-      api('DELETE', '/api/snippets/' + encodeURIComponent(s.id)).then(loadSnippets).catch(function (er) { toast(er.message); });
+      confirmDialog({ title: 'Delete this snippet?', message: '“' + s.title + '” will be removed from your code library.' }).then(function (ok) {
+        if (ok) api('DELETE', '/api/snippets/' + encodeURIComponent(s.id)).then(loadSnippets).catch(function (er) { toast(er.message); });
+      });
     }
   });
 
@@ -789,6 +979,7 @@
     document.getElementById('sTags').value = s ? s.tags.join(', ') : (snipFilter.tag !== 'all' ? snipFilter.tag : '');
     document.getElementById('sDesc').value = s ? s.description : '';
     document.getElementById('sCode').value = s ? s.code : '';
+    syncSelects();
     snipBg.classList.add('open');
     setTimeout(function () { document.getElementById('sTitleIn').focus(); }, 30);
   }
@@ -836,7 +1027,8 @@
   /* ---------- global keys ---------- */
   document.addEventListener('keydown', function (e) {
     if (e.key === 'Escape') {
-      if (closePop()) return;
+      if (closePop(true)) return;
+      if (closeConfirm(false)) return;
       if (modalBg.classList.contains('open')) return closeModal();
       if (snipBg.classList.contains('open')) return closeSnip();
       if (projBg.classList.contains('open')) return closeProj();
@@ -885,7 +1077,7 @@
       '<a class="btn primary" href="/auth/login">Sign in with GitHub</a></div>';
   }
 
-  function gateSetup(s) {
+  function gateSetup(s, notice) {
     setGated(true);
     var install = s.installUrl
       ? '<a href="' + esc(s.installUrl) + '" target="_blank" rel="noopener">Install the app</a> and choose <b>Only select repositories</b> → <code>' + esc(s.repo) + '</code>.'
@@ -897,9 +1089,25 @@
       '<li><a href="' + esc(s.newRepoUrl) + '" target="_blank" rel="noopener">Create a private repo</a> named <code>' + esc(s.repo.split('/')[1]) + '</code>. Leave it empty.</li>' +
       '<li>' + install + '</li>' +
       '</ol>' +
+      (notice ? '<p class="gate-msg" role="alert">' + esc(notice) + '</p>' : '') +
       '<div class="macts"><form method="post" action="/auth/logout"><button class="btn" type="submit">Sign out</button></form>' +
       '<button class="btn primary" id="gateRetry">I’ve done this, check again</button></div></div>';
-    document.getElementById('gateRetry').addEventListener('click', boot);
+    document.getElementById('gateRetry').addEventListener('click', function () { recheckSetup(s, this); });
+  }
+
+  // #17: give visible feedback instead of silently re-rendering the same card.
+  function recheckSetup(prev, btn) {
+    btn.disabled = true; btn.textContent = 'Checking…';
+    var minWait = new Promise(function (r) { setTimeout(r, 600); }); // long enough to notice
+    Promise.all([api('GET', '/api/session'), minWait]).then(function (res) {
+      var s = res[0];
+      if (!s.signedIn) return gateLogin();
+      if (s.ready) return enterApp(s);
+      gateSetup(s, 'Still can’t reach ' + s.repo + '. Check that the repo exists, is named exactly “' +
+        s.repo.split('/')[1] + '”, and that the app is installed on it. Then try again.');
+    }).catch(function (e) {
+      gateSetup(prev, 'Couldn’t check right now: ' + e.message);
+    });
   }
 
   function enterApp(s) {

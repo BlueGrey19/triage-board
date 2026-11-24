@@ -396,6 +396,48 @@ h1 .acc { color: var(--acc); }
 .pop .pd { width: 8px; height: 8px; border-radius: 50%; background: var(--c); flex: none; }
 .pop hr { border: 0; border-top: 1px solid var(--line); margin: 5px 4px; }
 .pop .danger { color: var(--crit); }
+.pop { max-height: min(340px, 60vh); overflow-y: auto; }
+
+/* ---------- styled dropdown button (replaces native <select>, #14) ---------- */
+.sel-btn {
+  width: 100%; display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  padding: 9px 11px; border-radius: 10px; font-size: 14px; text-align: left; cursor: pointer;
+  border: 1px solid var(--line-2); background: var(--panel-2); color: var(--text); transition: .15s;
+}
+.sel-btn:hover { border-color: var(--text-3); }
+.sel-btn:focus-visible, .sel-btn[aria-expanded="true"] {
+  outline: 0; border-color: var(--acc); box-shadow: 0 0 0 3px color-mix(in srgb, var(--acc) 20%, transparent);
+}
+.sel-val { display: flex; align-items: center; gap: 8px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sel-btn .pd { width: 8px; height: 8px; border-radius: 50%; background: var(--c); flex: none; }
+.sel-chev { color: var(--text-3); transition: transform .2s; }
+.sel-btn[aria-expanded="true"] .sel-chev { transform: rotate(180deg); }
+
+/* ---------- suggestions under a text field (replaces <datalist>, #15) ---------- */
+.has-suggest { position: relative; }
+.suggest {
+  position: absolute; left: 0; right: 0; top: calc(100% + 4px); z-index: 10;
+  max-height: 232px; overflow-y: auto; padding: 5px;
+  background: var(--panel); border: 1px solid var(--line-2); border-radius: 12px; box-shadow: var(--shadow-lg);
+}
+.sug { padding: 7px 10px; border-radius: 8px; cursor: pointer; font-size: 13.5px; color: var(--text-2); }
+.sug:hover, .sug.on { background: var(--panel-3); color: var(--text); }
+.sug b { color: var(--acc); font-weight: 700; }
+
+/* ---------- confirm dialog (replaces window.confirm, #16) ---------- */
+.modal.confirm { max-width: 400px; text-align: center; padding: 26px 24px 22px; }
+.c-ico {
+  width: 46px; height: 46px; margin: 0 auto 14px; border-radius: 14px; display: grid; place-items: center;
+  color: var(--crit); background: color-mix(in srgb, var(--crit) 14%, transparent);
+}
+.c-ico svg { width: 22px; height: 22px; }
+.modal.confirm h2 { margin-bottom: 8px; }
+.c-msg { margin: 0 0 20px; color: var(--text-2); word-break: break-word; }
+.modal.confirm .macts { justify-content: center; }
+.modal.confirm .macts .btn { flex: 1; }
+.btn.danger-solid { border-color: transparent; color: #fff; background: var(--crit); box-shadow: 0 6px 18px color-mix(in srgb, var(--crit) 30%, transparent); }
+.btn.danger-solid:hover { filter: brightness(1.08); }
+#confirmBg { z-index: 250; }
 
 /* ---------- snippets: two-pane library ---------- */
 .search-wrap {
@@ -558,6 +600,11 @@ h1 .acc { color: var(--acc); }
 .gate-card li { margin-bottom: 8px; }
 .gate-card code { font-family: "JetBrains Mono", monospace; font-size: 12.5px; padding: 1px 6px; border-radius: 5px; background: var(--panel-3); color: var(--text); }
 .gate-card form { margin: 0; }
+.gate-msg {
+  margin: 0 0 16px; padding: 10px 12px; border-radius: 10px; font-size: 13.5px; line-height: 1.5;
+  color: var(--text); background: color-mix(in srgb, var(--st-blocked) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--st-blocked) 40%, transparent);
+}
 .app.gated { grid-template-columns: 1fr; }
 .app.gated .side, .app.gated .topbar { display: none; }
 
