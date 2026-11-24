@@ -14,10 +14,10 @@
   ];
   var PLAB = { critical: 'Critical', high: 'High', medium: 'Medium', low: 'Low' };
   var PCOLOR = { critical: 'var(--crit)', high: 'var(--high)', medium: 'var(--med)', low: 'var(--low)' };
-  var STATUSES = ['open', 'doing', 'blocked', 'done'];
-  var SLAB = { open: 'Open', doing: 'Doing', blocked: 'Blocked', done: 'Done' };
-  var SCOLOR = { open: 'var(--st-open)', doing: 'var(--st-doing)', blocked: 'var(--st-blocked)', done: 'var(--st-done)' };
-  var SRANK = { doing: 0, blocked: 1, open: 2, done: 3 };
+  var STATUSES = ['open', 'doing', 'testing', 'blocked', 'done'];
+  var SLAB = { open: 'Open', doing: 'Doing', testing: 'Testing', blocked: 'Blocked', done: 'Done' };
+  var SCOLOR = { open: 'var(--st-open)', doing: 'var(--st-doing)', testing: 'var(--st-testing)', blocked: 'var(--st-blocked)', done: 'var(--st-done)' };
+  var SRANK = { doing: 0, testing: 1, blocked: 2, open: 3, done: 4 };
 
   var ICON = {
     check: '<svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg>',
@@ -30,6 +30,7 @@
     code:  '<svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>',
     active:  '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="3"/></svg>',
     doing:   '<svg viewBox="0 0 24 24" aria-hidden="true"><polygon points="7 4 19 12 7 20 7 4"/></svg>',
+    testing: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 3h6M10 3v6L4.5 18.5A1.7 1.7 0 0 0 6 21h12a1.7 1.7 0 0 0 1.5-2.5L14 9V3M7 15h10"/></svg>',
     blocked: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M5.6 5.6l12.8 12.8"/></svg>',
     done:    '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M22 11.1V12a10 10 0 1 1-5.9-9.1"/><polyline points="22 4 12 14 9 11"/></svg>'
   };
@@ -37,7 +38,8 @@
   // Local view of server state.
   var board = { projects: [], items: [] };
   // prio / project come from the sidebar; view comes from the status tiles.
-  var filters = { prio: 'all', project: 'all', view: 'all' };
+  // group: one entry from an item's comma-separated groups; q: board search text.
+  var filters = { prio: 'all', project: 'all', group: 'all', view: 'all', q: '' };
   var openDone = {};      // band key -> true when its Done section is expanded
   var editingId = null;   // when set, the add-modal is in "edit" mode
   var detailId = null;    // item shown in the expanded-card modal
@@ -77,6 +79,7 @@
       board = b;
       // keep the active project filter valid
       if (filters.project !== 'all' && projectOrder().indexOf(filters.project) < 0) filters.project = 'all';
+      if (filters.group !== 'all' && !allGroups().some(function (g) { return sameText(g, filters.group); })) filters.group = 'all';
       render();
     }).catch(function (e) {
       boardEl.innerHTML = '<p class="empty">Could not reach the server.<br>Is it still running in your terminal?<br><br>' + esc(e.message) + '</p>';
@@ -102,10 +105,31 @@
     });
     return order;
   }
-  function inScope(it) {
+  // Groups are stored as one text field; commas separate several ("Books, Reporting tags").
+  function groupsOf(it) {
+    return String(it.group || '').split(',').map(function (g) { return g.trim(); }).filter(Boolean);
+  }
+  function sameText(a, b) { return String(a).toLowerCase() === String(b).toLowerCase(); }
+  // Every group used on the board, case-insensitively unique, A–Z.
+  function allGroups() {
+    var seen = {}, out = [];
+    board.items.forEach(function (it) {
+      groupsOf(it).forEach(function (g) { var k = g.toLowerCase(); if (!seen[k]) { seen[k] = 1; out.push(g); } });
+    });
+    return out.sort(function (a, b) { return a.localeCompare(b); });
+  }
+  function matchesSearch(it) {
+    var q = filters.q.trim().toLowerCase();
+    if (!q) return true;
+    var hay = [it.title, it.note, it.group, it.project].join('\n').toLowerCase();
+    return q.split(/\s+/).every(function (t) { return hay.indexOf(t) >= 0; });
+  }
+  // skip: name of one filter to ignore (used to count what the group menu would show).
+  function inScope(it, skip) {
     if (filters.prio !== 'all' && (it.prio || 'medium') !== filters.prio) return false;
     if (filters.project !== 'all' && (it.project || '(no project)') !== filters.project) return false;
-    return true;
+    if (skip !== 'group' && filters.group !== 'all' && !groupsOf(it).some(function (g) { return sameText(g, filters.group); })) return false;
+    return matchesSearch(it);
   }
   function matchesView(it) {
     var st = it.status || 'open';
@@ -123,17 +147,30 @@
   /* ==========================================================
    * Board rendering
    * ========================================================== */
+  // Title plus the description icon. The icon is glued to the last word so it
+  // never wraps onto a line of its own.
+  function titleWithNote(it) {
+    var t = String(it.title || '');
+    if (!it.note) return esc(t);
+    var icon = '<span class="has-note" title="Has a description" aria-label="Has a description">' + ICON.note + '</span>';
+    var cut = t.lastIndexOf(' ');
+    return esc(t.slice(0, cut + 1)) + '<span class="nw">' + esc(t.slice(cut + 1)) + icon + '</span>';
+  }
+
   function cardHTML(it, showProject) {
     var st = it.status || 'open';
     var h = '<article class="card s-' + st + '" data-id="' + esc(it.id) + '" draggable="true" tabindex="0" aria-label="' + esc(it.title) + '">';
     h += '<button class="check" data-act="done" aria-label="' + (st === 'done' ? 'Mark not done' : 'Mark done') + '">' + ICON.check + '</button>';
-    h += '<h3 class="ct">' + esc(it.title) + '</h3>';
+    h += '<h3 class="ct">' + titleWithNote(it) + '</h3>';
     h += '<button class="more" data-act="more" aria-label="More actions" aria-haspopup="menu" aria-expanded="false">' + ICON.more + '</button>';
     h += '<div class="meta">';
     h += '<button class="pill ' + st + '" data-act="status" aria-haspopup="menu" title="Change status">' + SLAB[st] + '</button>';
     if (showProject && it.project) h += '<span class="chip proj">' + esc(it.project) + '</span>';
-    if (it.group) h += '<span class="chip">' + esc(it.group) + '</span>';
-    if (it.note) h += '<span class="has-note" title="Has a description">' + ICON.note + '</span>';
+    groupsOf(it).forEach(function (g) {
+      var on = filters.group !== 'all' && sameText(g, filters.group);
+      h += '<button class="chip grp' + (on ? ' on' : '') + '" data-act="group" data-g="' + esc(g) + '" aria-pressed="' + on + '" title="' +
+        (on ? 'Stop filtering by ' : 'Show only ') + esc(g) + '">' + esc(g) + '</button>';
+    });
     h += '</div></article>';
     return h;
   }
@@ -147,16 +184,17 @@
 
     var h = '<section class="band ' + p.k + '" data-band="' + p.k + '">';
     h += '<div class="band-head"><span class="band-dot"></span><h2 class="band-name">' + p.name + '</h2>';
-    h += '<span class="band-count" title="Not done">' + openCount + '</span>';
+    if (openCount) h += '<span class="band-count" title="Not done">' + openCount + '</span>';
     h += '<button class="band-add" data-act="band-add" data-p="' + p.k + '" title="Add a ' + p.name + ' item" aria-label="Add a ' + p.name + ' item">' + ICON.plus + '</button></div>';
 
     if (filters.view === 'done') {
       h += '<div class="band-body" data-band="' + p.k + '">' +
-        (done.length ? done.map(function (i) { return cardHTML(i, showProject); }).join('') : '<p class="drophint">Nothing done yet</p>') + '</div>';
+        (done.length ? done.map(function (i) { return cardHTML(i, showProject); }).join('') : '<p class="drophint">' + (filters.q ? 'No matches' : 'Nothing done yet') + '</p>') + '</div>';
     } else {
+      var emptyMsg = filters.q ? 'No matches' : (filters.view === 'all' || filters.view === 'active' ? 'Nothing open. Drop a card here' : 'None');
       h += '<div class="band-body" data-band="' + p.k + '">' +
         (open.length ? open.map(function (i) { return cardHTML(i, showProject); }).join('')
-                     : '<p class="drophint">' + (filters.view === 'all' || filters.view === 'active' ? 'Nothing open. Drop a card here' : 'None') + '</p>') + '</div>';
+                     : '<p class="drophint">' + emptyMsg + '</p>') + '</div>';
       if (filters.view === 'all' && done.length) {
         var ex = !!openDone[p.k];
         h += '<button class="done-toggle" data-act="done-toggle" data-p="' + p.k + '" aria-expanded="' + ex + '">' +
@@ -171,21 +209,49 @@
     var n = {
       active: scoped.filter(notDone).length,
       doing: scoped.filter(function (i) { return i.status === 'doing'; }).length,
+      testing: scoped.filter(function (i) { return i.status === 'testing'; }).length,
       blocked: scoped.filter(function (i) { return i.status === 'blocked'; }).length,
       done: scoped.filter(function (i) { return i.status === 'done'; }).length
     };
     var tiles = [
       { k: 'active',  lab: 'Not done', c: 'var(--acc)' },
       { k: 'doing',   lab: 'Doing',    c: SCOLOR.doing },
+      { k: 'testing', lab: 'Testing',  c: SCOLOR.testing },
       { k: 'blocked', lab: 'Blocked',  c: SCOLOR.blocked },
       { k: 'done',    lab: 'Done',     c: SCOLOR.done }
     ];
     return tiles.map(function (t) {
       return '<button class="stat" style="--c:' + t.c + '" data-view="' + t.k + '" aria-pressed="' + (filters.view === t.k) + '" title="Show only ' + t.lab.toLowerCase() + ' items (click again for all)">' +
-        '<span class="stat-ico">' + ICON[t.k] + '</span>' +
-        '<span class="stat-txt"><span class="stat-lab">' + t.lab + '</span><span class="stat-num">' + n[t.k] + '</span></span></button>';
+        '<span class="stat-ico">' + ICON[t.k] + '</span><span class="stat-lab">' + t.lab + '</span><span class="stat-num">' + n[t.k] + '</span></button>';
     }).join('');
   }
+
+  // Removable chips for every active filter, shown under the board title.
+  var VIEW_LAB = { active: 'Not done', doing: 'Doing', testing: 'Testing', blocked: 'Blocked', done: 'Done' };
+  function activeFiltersHTML() {
+    var f = [];
+    if (filters.prio !== 'all') f.push({ k: 'prio', lab: 'Priority', v: PLAB[filters.prio] });
+    if (filters.project !== 'all') f.push({ k: 'project', lab: 'Project', v: filters.project });
+    if (filters.group !== 'all') f.push({ k: 'group', lab: 'Group', v: filters.group });
+    if (filters.view !== 'all') f.push({ k: 'view', lab: 'Status', v: VIEW_LAB[filters.view] });
+    if (filters.q.trim()) f.push({ k: 'q', lab: 'Search', v: '“' + filters.q.trim() + '”' });
+    if (!f.length) return '';
+    return f.map(function (x) {
+      return '<span class="fchip">' + x.lab + ': <b>' + esc(x.v) + '</b><button data-clear="' + x.k + '" aria-label="Remove ' + x.lab.toLowerCase() + ' filter" title="Remove">' +
+        '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 6L6 18M6 6l12 12"/></svg></button></span>';
+    }).join('') + (f.length > 1 ? '<button class="fclear" data-clear="all">Clear all</button>' : '');
+  }
+  function clearFilter(k) {
+    if (k === 'all' || k === 'prio') filters.prio = 'all';
+    if (k === 'all' || k === 'project') filters.project = 'all';
+    if (k === 'all' || k === 'group') filters.group = 'all';
+    if (k === 'all' || k === 'view') filters.view = 'all';
+    if (k === 'all' || k === 'q') { filters.q = ''; document.getElementById('boardSearch').value = ''; }
+    render();
+  }
+  document.getElementById('activeFilters').addEventListener('click', function (e) {
+    var b = e.target.closest('[data-clear]'); if (b) clearFilter(b.dataset.clear);
+  });
 
   function render() {
     var scoped = board.items.filter(inScope);
@@ -196,12 +262,22 @@
     var title = 'All items';
     if (filters.prio !== 'all') title = PLAB[filters.prio] + ' priority';
     else if (filters.project !== 'all') title = esc(filters.project);
+    else if (filters.group !== 'all') title = esc(filters.group);
     document.getElementById('boardTitle').innerHTML = title;
+    var af = activeFiltersHTML(), afEl = document.getElementById('activeFilters');
+    afEl.innerHTML = af; afEl.hidden = !af;
     var done = scoped.filter(function (i) { return i.status === 'done'; }).length;
     document.getElementById('doneN').textContent = done;
     document.getElementById('totN').textContent = scoped.length;
     document.getElementById('leftN').textContent = scoped.length - done;
-    document.getElementById('barFill').style.width = (scoped.length ? done / scoped.length * 100 : 0) + '%';
+    var pct = scoped.length ? Math.round(done / scoped.length * 100) : 0;
+    document.getElementById('barFill').style.width = pct + '%';
+    document.getElementById('donePct').textContent = pct + '%';
+    var gf = document.getElementById('groupFilter');
+    document.getElementById('groupFilterLab').innerHTML = filters.group === 'all'
+      ? '<span class="lab-long">All groups</span><span class="lab-short">Groups</span>' : esc(filters.group);
+    gf.classList.toggle('on', filters.group !== 'all');
+    gf.hidden = !allGroups().length;
     document.getElementById('stats').innerHTML = statsHTML(scoped);
 
     // layout
@@ -239,7 +315,16 @@
         '<span class="nav-dot" style="--c:var(--purple)"></span><span>' + esc(p) + '</span><span class="nav-count">' + (n || '') + '</span></button>';
     }).join('') : '<p class="nav-empty">No projects yet</p>';
 
-    var allBoard = page === 'board' && filters.prio === 'all' && filters.project === 'all';
+    var groups = allGroups();
+    document.getElementById('navGroupsLabel').hidden = !groups.length;
+    document.getElementById('navGroups').innerHTML = groups.map(function (g) {
+      var n = open.filter(function (i) { return groupsOf(i).some(function (x) { return sameText(x, g); }); }).length;
+      var cur = page === 'board' && filters.group !== 'all' && sameText(filters.group, g);
+      return '<button class="nav-item" data-nav="group" data-v="' + esc(g) + '"' + (cur ? ' aria-current="page"' : '') + '>' +
+        '<span class="nav-hash" aria-hidden="true">#</span><span>' + esc(g) + '</span><span class="nav-count">' + (n || '') + '</span></button>';
+    }).join('');
+
+    var allBoard = page === 'board' && filters.prio === 'all' && filters.project === 'all' && filters.group === 'all';
     setCurrent(document.getElementById('navBoard'), allBoard);
     setCurrent(document.getElementById('navSnips'), page === 'snippets');
   }
@@ -252,6 +337,7 @@
     else {
       filters.prio = k === 'prio' ? b.dataset.v : 'all';
       filters.project = k === 'project' ? b.dataset.v : 'all';
+      filters.group = k === 'group' ? b.dataset.v : 'all';
       showPage('board');
       render();
     }
@@ -266,6 +352,16 @@
   }
   setNavOpen(pref('tb-nav', 'open') === 'open');
   navCaret.addEventListener('click', function () { setNavOpen(navCaret.getAttribute('aria-expanded') !== 'true'); });
+
+  // Groups list in the sidebar: collapsed by default, remembers its state.
+  var navGroupsToggle = document.getElementById('navGroupsToggle');
+  function setGroupsOpen(on) {
+    navGroupsToggle.setAttribute('aria-expanded', String(on));
+    document.getElementById('navGroups').hidden = !on;
+    setPref('tb-nav-groups', on ? 'open' : 'closed');
+  }
+  setGroupsOpen(pref('tb-nav-groups', 'closed') === 'open');
+  navGroupsToggle.addEventListener('click', function () { setGroupsOpen(navGroupsToggle.getAttribute('aria-expanded') !== 'true'); });
 
   // mobile drawer
   var menuBtn = document.getElementById('menuBtn');
@@ -300,6 +396,26 @@
   document.getElementById('layoutSw').addEventListener('click', function (e) {
     var b = e.target.closest('[data-layout]'); if (!b) return;
     layout = b.dataset.layout; setPref('tb-layout', layout); render();
+  });
+  // Group filter on the board: works alongside the priority/project/search filters.
+  var groupFilterBtn = document.getElementById('groupFilter');
+  groupFilterBtn.addEventListener('click', function () {
+    if (popAnchor === groupFilterBtn) return closePop(true);
+    var pool = board.items.filter(function (i) { return inScope(i, 'group') && notDone(i); });
+    var html = '<button role="menuitemradio" data-g="" aria-checked="' + (filters.group === 'all') + '">All groups</button>';
+    html += '<hr>' + allGroups().map(function (g) {
+      var n = pool.filter(function (i) { return groupsOf(i).some(function (x) { return sameText(x, g); }); }).length;
+      var on = filters.group !== 'all' && sameText(filters.group, g);
+      return '<button role="menuitemradio" data-g="' + esc(g) + '" aria-checked="' + on + '"><span class="pop-hash">#</span>' + esc(g) +
+        (n ? '<span class="pop-count">' + n + '</span>' : '') + '</button>';
+    }).join('');
+    openPop(groupFilterBtn, html, function (d) { filters.group = d.g || 'all'; render(); }, { matchWidth: true });
+  });
+
+  var boardSearch = document.getElementById('boardSearch');
+  boardSearch.addEventListener('input', function () { filters.q = boardSearch.value; render(); });
+  boardSearch.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape' && boardSearch.value) { e.stopPropagation(); boardSearch.value = ''; filters.q = ''; render(); }
   });
   document.getElementById('stats').addEventListener('click', function (e) {
     var b = e.target.closest('[data-view]'); if (!b) return;
@@ -522,9 +638,8 @@
     list.forEach(function (v) { var k = v.toLowerCase(); if (v && !seen[k]) { seen[k] = 1; out.push(v); } });
     return out.sort(function (a, b) { return a.localeCompare(b); });
   }
-  attachSuggest(document.getElementById('mGroup'), function () {
-    return uniqueSorted(board.items.map(function (i) { return i.group || ''; }));
-  });
+  // Groups are comma-separated, so suggest for the entry being typed (like tags).
+  attachSuggest(document.getElementById('mGroup'), allGroups, true);
   attachSuggest(document.getElementById('sTags'), function () {
     var all = []; snippets.forEach(function (s) { all = all.concat(s.tags); });
     return uniqueSorted(all);
@@ -567,6 +682,12 @@
       var act = btn.dataset.act;
       if (act === 'band-add') return openAdd(btn.dataset.p);
       if (act === 'done-toggle') { openDone[btn.dataset.p] = !openDone[btn.dataset.p]; return render(); }
+      if (act === 'group') {
+        e.stopPropagation();
+        var g = btn.dataset.g;
+        filters.group = filters.group !== 'all' && sameText(filters.group, g) ? 'all' : g; // click again to clear
+        return render();
+      }
       if (!card) return;
       var id = card.dataset.id, it = itemById(id); if (!it) return;
       e.stopPropagation();
@@ -636,7 +757,7 @@
     detailEl.className = 'modal detail ' + pr;
     var h = '<div class="d-top"><div class="d-crumbs"><span class="d-prio">' + PLAB[pr] + '</span>';
     if (it.project) h += '<span class="chip proj">' + esc(it.project) + '</span>';
-    if (it.group) h += '<span class="chip">' + esc(it.group) + '</span>';
+    groupsOf(it).forEach(function (g) { h += '<span class="chip">' + esc(g) + '</span>'; });
     h += '</div><h2 id="dTitle">' + esc(it.title) + '</h2></div>';
     h += '<div class="d-body">';
     h += '<div class="d-section"><p class="d-label">Status</p><div class="d-status" role="group" aria-label="Status">' +
@@ -686,7 +807,7 @@
     document.getElementById('mSave').textContent = 'Add to board';
     mErr.textContent = '';
     document.getElementById('mTitleIn').value = '';
-    document.getElementById('mGroup').value = '';
+    document.getElementById('mGroup').value = filters.group !== 'all' ? filters.group : '';
     document.getElementById('mNote').value = '';
     var sel = document.getElementById('mProj');
     fillProjectSelect(sel);
@@ -736,6 +857,8 @@
       if (filters.prio !== 'all' && filters.prio !== payload.prio) filters.prio = 'all';
       if (filters.project !== 'all' && filters.project !== payload.project) filters.project = 'all';
       if (filters.view !== 'all' && filters.view !== 'active') filters.view = 'all';
+      if (filters.group !== 'all' && !groupsOf(payload).some(function (g) { return sameText(g, filters.group); })) filters.group = 'all';
+      if (filters.q && !matchesSearch(payload)) { filters.q = ''; boardSearch.value = ''; }
     }
     req.then(function () { closeModal(); return loadBoard(); })
        .catch(function (e) { mErr.textContent = e.message; });
@@ -802,7 +925,14 @@
    * ========================================================== */
   var snippets = [];
   var snipsLoaded = false;
-  var snipFilter = { q: '', tag: 'all' };
+  var snipFilter = { q: '', tag: 'all', type: 'all' };
+  // Suggestions for "Used in"; anything else typed is kept too.
+  var TYPE_PRESETS = ['Workflow function', 'Standalone function', 'Scheduled function', 'Custom button', 'Client script', 'Webhook'];
+  function snipTypes() {
+    var seen = {}, out = [];
+    snippets.forEach(function (s) { var k = (s.type || '').toLowerCase(); if (k && !seen[k]) { seen[k] = 1; out.push(s.type); } });
+    return out.sort(function (a, b) { return a.localeCompare(b); });
+  }
   var selectedSnip = null;
   var editingSnip = null;
   var libEl = document.getElementById('lib');
@@ -858,9 +988,10 @@
 
   function snipMatches(s) {
     if (snipFilter.tag !== 'all' && s.tags.indexOf(snipFilter.tag) < 0) return false;
+    if (snipFilter.type !== 'all' && !sameText(s.type || '', snipFilter.type)) return false;
     var q = snipFilter.q.trim().toLowerCase();
     if (!q) return true;
-    var hay = (s.title + '\n' + s.description + '\n' + s.tags.join(' ') + '\n' + s.code).toLowerCase();
+    var hay = (s.title + '\n' + (s.type || '') + '\n' + s.description + '\n' + s.tags.join(' ') + '\n' + s.code).toLowerCase();
     return q.split(/\s+/).every(function (t) { return hay.indexOf(t) >= 0; });
   }
   function snipById(id) {
@@ -871,15 +1002,28 @@
   function renderSnippets() {
     document.getElementById('navSnipCount').textContent = snippets.length || '';
 
-    // tag chips, most-used first
+    // "Used in" chips first (click again to clear), then tag chips, most-used first
+    var types = snipTypes();
+    if (snipFilter.type !== 'all' && !types.some(function (t) { return sameText(t, snipFilter.type); })) snipFilter.type = 'all';
+    var chips = '';
+    if (types.length) {
+      chips += '<span class="tagrow-lab">Used in</span>' + types.map(function (t) {
+        var n = snippets.filter(function (s) { return sameText(s.type || '', t); }).length;
+        var on = snipFilter.type !== 'all' && sameText(snipFilter.type, t);
+        return '<button class="tagbtn type" data-type="' + esc(t) + '" aria-pressed="' + on + '">' + esc(t) + ' <span class="c">' + n + '</span></button>';
+      }).join('');
+    }
     var counts = {};
     snippets.forEach(function (s) { s.tags.forEach(function (t) { counts[t] = (counts[t] || 0) + 1; }); });
     var tags = Object.keys(counts).sort(function (a, b) { return counts[b] - counts[a] || a.localeCompare(b); });
     if (snipFilter.tag !== 'all' && !counts[snipFilter.tag]) snipFilter.tag = 'all';
-    var chips = tags.length ? '<button class="tagbtn" data-tag="all" aria-pressed="' + (snipFilter.tag === 'all') + '">All <span class="c">' + snippets.length + '</span></button>' : '';
-    tags.forEach(function (t) {
-      chips += '<button class="tagbtn" data-tag="' + esc(t) + '" aria-pressed="' + (snipFilter.tag === t) + '">#' + esc(t) + ' <span class="c">' + counts[t] + '</span></button>';
-    });
+    if (tags.length) {
+      chips += (types.length ? '<span class="tagrow-sep" aria-hidden="true"></span>' : '') + '<span class="tagrow-lab">Tags</span>';
+      chips += '<button class="tagbtn" data-tag="all" aria-pressed="' + (snipFilter.tag === 'all') + '">All <span class="c">' + snippets.length + '</span></button>';
+      tags.forEach(function (t) {
+        chips += '<button class="tagbtn" data-tag="' + esc(t) + '" aria-pressed="' + (snipFilter.tag === t) + '">#' + esc(t) + ' <span class="c">' + counts[t] + '</span></button>';
+      });
+    }
     document.getElementById('tagFilters').innerHTML = chips;
 
     var vis = snippets.filter(snipMatches);
@@ -896,7 +1040,8 @@
       snipsEl.innerHTML = '<div role="listbox" aria-label="Snippets">' + vis.map(function (s) {
         return '<button class="sitem" role="option" data-sid="' + esc(s.id) + '" aria-selected="' + (s.id === selectedSnip) + '">' +
           '<span class="sitem-top"><span class="sitem-title">' + esc(s.title) + '</span><span class="lang">' + esc(LANG_LABEL[s.language] || s.language) + '</span></span>' +
-          (s.tags.length ? '<span class="sitem-tags">' + s.tags.map(function (t) { return '#' + esc(t); }).join('  ') + '</span>' : '') +
+          (s.type || s.tags.length ? '<span class="sitem-tags">' + (s.type ? '<span class="sitem-type">' + esc(s.type) + '</span>' : '') +
+            s.tags.map(function (t) { return '#' + esc(t); }).join('  ') + '</span>' : '') +
           '</button>';
       }).join('') + '</div>';
     }
@@ -914,6 +1059,7 @@
     var h = '<div class="sd-head">';
     h += '<button class="btn sm sd-back" data-act="back">' + ICON.back + 'All snippets</button>';
     h += '<div class="sd-title"><h2>' + esc(s.title) + '</h2><div class="sd-sub"><span class="lang">' + esc(LANG_LABEL[s.language] || s.language) + '</span>' +
+      (s.type ? '<button class="stype" data-act="type" data-type="' + esc(s.type) + '" title="Show only ' + esc(s.type) + ' snippets">' + esc(s.type) + '</button>' : '') +
       s.tags.map(function (t) { return '<button class="stag" data-act="tag" data-tag="' + esc(t) + '">#' + esc(t) + '</button>'; }).join('') + '</div></div>';
     h += '<div class="sd-acts"><button class="btn sm primary" data-act="copy">' + ICON.copy + 'Copy</button>' +
       '<button class="btn sm" data-act="sedit">Edit</button><button class="btn sm danger" data-act="sdel" aria-label="Delete snippet">Delete</button></div>';
@@ -953,6 +1099,8 @@
       copyText(s.code).then(function () { toast('Copied “' + s.title + '”', true); }, function () { toast('Could not copy. Select the code manually.'); });
     } else if (act === 'tag') {
       snipFilter.tag = btn.dataset.tag; renderSnippets();
+    } else if (act === 'type') {
+      snipFilter.type = btn.dataset.type; renderSnippets();
     } else if (act === 'sedit') {
       openSnip(s);
     } else if (act === 'sdel') {
@@ -964,7 +1112,9 @@
 
   document.getElementById('tagFilters').addEventListener('click', function (e) {
     var b = e.target.closest('.tagbtn'); if (!b) return;
-    snipFilter.tag = b.dataset.tag; renderSnippets();
+    if (b.dataset.type) snipFilter.type = b.getAttribute('aria-pressed') === 'true' ? 'all' : b.dataset.type;
+    else snipFilter.tag = b.dataset.tag;
+    renderSnippets();
   });
 
   var searchEl = document.getElementById('snipSearch');
@@ -976,6 +1126,7 @@
     sErr.textContent = '';
     document.getElementById('sTitleIn').value = s ? s.title : '';
     document.getElementById('sLang').value = s ? s.language : 'deluge';
+    document.getElementById('sType').value = s ? (s.type || '') : (snipFilter.type !== 'all' ? snipFilter.type : '');
     document.getElementById('sTags').value = s ? s.tags.join(', ') : (snipFilter.tag !== 'all' ? snipFilter.tag : '');
     document.getElementById('sDesc').value = s ? s.description : '';
     document.getElementById('sCode').value = s ? s.code : '';
@@ -984,6 +1135,9 @@
     setTimeout(function () { document.getElementById('sTitleIn').focus(); }, 30);
   }
   function closeSnip() { snipBg.classList.remove('open'); editingSnip = null; }
+
+  // "Used in": suggest the common places plus any custom ones already used.
+  attachSuggest(document.getElementById('sType'), function () { return uniqueSorted(TYPE_PRESETS.concat(snipTypes())); });
 
   document.getElementById('snipAdd').addEventListener('click', function () { openSnip(null); });
   document.getElementById('sCancel').addEventListener('click', closeSnip);
@@ -1006,6 +1160,7 @@
     var payload = {
       title: title,
       language: document.getElementById('sLang').value,
+      type: document.getElementById('sType').value.trim(),
       tags: document.getElementById('sTags').value,
       description: document.getElementById('sDesc').value.trim(),
       code: code
@@ -1035,10 +1190,13 @@
       if (detailBg.classList.contains('open')) return closeDetail();
       if (appEl.classList.contains('menu-open')) return closeMenu();
     }
+    // Shortcuts: "/" focuses the page's search, "N" adds a board item.
+    // Ignored while typing, with a window open, or with Ctrl/Cmd/Alt held.
     var tag = (e.target.tagName || '').toLowerCase();
-    if (e.key === '/' && page === 'snippets' && tag !== 'input' && tag !== 'textarea' && tag !== 'select') {
-      e.preventDefault(); searchEl.focus();
-    }
+    var typing = tag === 'input' || tag === 'textarea' || tag === 'select' || e.target.isContentEditable;
+    if (typing || e.ctrlKey || e.metaKey || e.altKey || document.querySelector('.modal-bg.open') || appEl.classList.contains('gated')) return;
+    if (e.key === '/') { e.preventDefault(); (page === 'snippets' ? searchEl : boardSearch).focus(); }
+    else if ((e.key === 'n' || e.key === 'N') && page === 'board') { e.preventDefault(); openAdd(); }
   });
 
   /* ==========================================================
