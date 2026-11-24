@@ -1,13 +1,13 @@
 # Triage Board
 
-A neon-on-black **to-do triage board** with a built-in **code snippet library**.
+A **to-do triage board** with a built-in **code snippet library**, in light and dark mode.
 
-- **Board:** items are sorted into four priority bands (**Critical / High / Medium / Low**)
-  and grouped by project inside each band. When you're juggling several clients you
-  can still see each one's pile at a glance.
-- **Snippets:** your reusable code (Deluge, JS, SQL, and others) with search, tags,
-  syntax highlighting and one-click copy, so you stop rewriting the same thing for
-  every client.
+- **Board:** items sit in four priority columns (**Critical / High / Medium / Low**),
+  each tagged with its project and groups. Filter by project, group, status or search
+  to see one client's pile at a glance, even when you're juggling several.
+- **Snippets:** your reusable code (Deluge, JS, SQL, and others) in a two-pane library
+  with search, tags, syntax highlighting and one-click copy, so you stop rewriting the
+  same thing for every client.
 
 It runs in one of two modes:
 
@@ -24,17 +24,47 @@ It runs in one of two modes:
 
 ## Features
 
-- **Add, edit and delete items** right on the board.
-- **Four priority bands.** Change an item's priority from the card, or **drag the card**
-  into another band.
-- **Per-project grouping inside every band.**
-- **Manage your own projects** with **⚙ Projects**. They become filter chips and
-  options in the "new item" dropdown.
-- **Status per item:** Open, Doing, Blocked, Done, plus filter rows for project and status.
-- **Snippet library:** a title, language, tags, description and code for each snippet.
-  Search across all of them (press `/`), filter by tag, and copy with one click. Deluge
-  gets its own syntax highlighting.
+### Board
+
+- **Four priority columns** side by side (2×2 on smaller screens, stacked on phones).
+  Change an item's priority from its `⋯` menu, or **drag the card** to another column.
+- **Slim cards.** Click a card to open it and see its description, change its status,
+  edit or delete it. Cards with a description show a small ≡ icon after the title.
+- **Status per item:** Open, Doing, Testing, Blocked, Done. Click the status pill on a
+  card to change it. Done items fold away under "✓ N done" in each column.
+- **Cards or Compact view.** Compact shows one line per item. Your choice is remembered.
+- **Sidebar filters** for priority, project and group, plus a **group filter** and
+  **search** on the board itself. They combine (e.g. Project: Milltrans + Group: Books),
+  and every active filter shows as a removable chip under the title.
+- **Status pills** in the header show counts and work as filters too, next to a
+  progress bar with the done percentage.
+- **Groups:** give an item several, separated by commas (`Books, Reporting tags`). Each
+  shows as its own chip; click one to filter by it.
+- **Projects** are managed from **Manage** in the sidebar. Give each one an **accent
+  colour** from a preset palette: its view takes on that colour, and its chip shows in
+  that colour on every card.
+
+### Snippets
+
+- **Two-pane library:** a searchable list on the left; the selected snippet on the right
+  with line numbers, syntax highlighting (including Deluge) and one-click copy.
+- Each snippet has a title, language, **Used in** (e.g. Workflow function, Webhook,
+  Client script), tags, description and code. Filter by Used in or by tag.
+
+### General
+
+- **Light, dark or auto theme** (follows your system), switchable in the sidebar.
+- **Works on phones:** the sidebar becomes a slide-out menu.
 - **Saves automatically.** Every change is written the moment you make it.
+
+### Keyboard shortcuts
+
+| Key | Does |
+|---|---|
+| `/` | Jump to search (board or snippets) |
+| `N` | Add a new board item |
+| `Esc` | Close the open menu or window, or clear the search box |
+| `↑` `↓` `Enter` | Move through and pick from menus, dropdowns and suggestions |
 
 ---
 
@@ -70,11 +100,14 @@ In VS Code you can also press **F5**. The included launch config starts the serv
 
   ```
   <your-username>/triage-data
-  ├── board.json              projects + triage items
+  ├── board.json              projects, project colours + triage items
   └── snippets/
       ├── books-create-invoice-a1b2.md
       └── ...                 one readable markdown file per snippet
   ```
+
+  A snippet file starts with a short header (title, language, optional `type` for
+  "Used in", tags, dates), followed by the description and the code block.
 
   Each change is a commit (`Add item: …`, `Update snippet: …`), so you can view
   history, diff and roll back on github.com. You can also hand-edit snippet files
