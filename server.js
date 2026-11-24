@@ -22,7 +22,7 @@ const express = require('express');
 require('./lib/env').loadEnv(path.join(__dirname, '.env'));
 
 const {
-  HttpError, SNIPPET_ID_RE, normalizeBoard, oneLine, sanitizeItem, sanitizeSnippet
+  HttpError, SNIPPET_ID_RE, normalizeBoard, cleanProjectColor, oneLine, sanitizeItem, sanitizeSnippet
 } = require('./lib/model');
 const { GitHubError, request, authorizeUrl, exchangeCode, refreshToken } = require('./lib/github');
 const { parseCookies, serializeCookie, createSealer } = require('./lib/session');
@@ -217,8 +217,23 @@ app.post('/api/projects', h(async (req, res) => {
       throw new HttpError(409, 'That project already exists.');
     }
     b.projects.push(name);
+    const color = cleanProjectColor(req.body && req.body.color);
+    if (color) b.projectColors[name] = color;
     return b;
   }, 'Add project: ' + name);
+  res.json(board);
+}));
+
+// Set a project's accent colour. '' (or any unknown value) resets it to the default.
+app.patch('/api/projects/:name', h(async (req, res) => {
+  const name = req.params.name;
+  const color = cleanProjectColor(req.body && req.body.color);
+  const board = await req.store.mutateBoard(b => {
+    if (!b.projects.includes(name)) throw new HttpError(404, 'That project no longer exists.');
+    if (color) b.projectColors[name] = color;
+    else delete b.projectColors[name];
+    return b;
+  }, 'Update project colour: ' + name + ' (' + (color || 'default') + ')');
   res.json(board);
 }));
 
@@ -228,6 +243,7 @@ app.delete('/api/projects/:name', h(async (req, res) => {
   // list, so nothing is silently lost.
   const board = await req.store.mutateBoard(b => {
     b.projects = b.projects.filter(p => p !== name);
+    delete b.projectColors[name];
     return b;
   }, 'Remove project: ' + name);
   res.json(board);

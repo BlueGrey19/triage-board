@@ -221,12 +221,15 @@
 <div class="modal-bg" id="projBg">
   <div class="modal" role="dialog" aria-modal="true" aria-labelledby="pTitle">
     <h2 id="pTitle">Your projects</h2>
-    <p class="psub">These show up in the sidebar and in the dropdown when you add an item.</p>
+    <p class="psub">These show up in the sidebar and in the dropdown when you add an item. Click a colour dot to give a project its own accent colour.</p>
     <ul class="plist" id="plist"></ul>
     <p class="merr" id="pErr"></p>
     <div class="fld addproj">
       <label for="pNewIn">Add a project</label>
       <div class="frow">
+        <button class="swatch-btn" id="pNewColor" type="button" aria-haspopup="menu" aria-expanded="false" aria-label="Colour for the new project: Default (purple)" title="Choose a colour">
+          <span class="sw" style="--c:var(--purple)"></span>
+        </button>
         <input id="pNewIn" placeholder="e.g. Acme Rollout" maxlength="80">
         <button class="btn primary" id="pAdd" style="flex:none">Add</button>
       </div>

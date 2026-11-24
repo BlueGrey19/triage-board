@@ -14,6 +14,15 @@
   ];
   var PLAB = { critical: 'Critical', high: 'High', medium: 'Medium', low: 'Low' };
   var PCOLOR = { critical: 'var(--crit)', high: 'var(--high)', medium: 'var(--med)', low: 'var(--low)' };
+  // Project accent colours. Names match the server's PROJECT_COLORS; the actual
+  // shades live in styles.css (--pc-*) so each theme can use a readable one.
+  var PROJ_COLORS = [
+    { k: '', name: 'Default (purple)' },
+    { k: 'blue', name: 'Blue' }, { k: 'cyan', name: 'Cyan' }, { k: 'teal', name: 'Teal' },
+    { k: 'green', name: 'Green' }, { k: 'lime', name: 'Lime' }, { k: 'amber', name: 'Amber' },
+    { k: 'orange', name: 'Orange' }, { k: 'rose', name: 'Rose' }, { k: 'pink', name: 'Pink' },
+    { k: 'slate', name: 'Slate' }
+  ];
   var STATUSES = ['open', 'doing', 'testing', 'blocked', 'done'];
   var SLAB = { open: 'Open', doing: 'Doing', testing: 'Testing', blocked: 'Blocked', done: 'Done' };
   var SCOLOR = { open: 'var(--st-open)', doing: 'var(--st-doing)', testing: 'var(--st-testing)', blocked: 'var(--st-blocked)', done: 'var(--st-done)' };
@@ -105,6 +114,36 @@
     });
     return order;
   }
+  /* ---------- project colours ---------- */
+  function projColor(p) {
+    var k = board.projectColors && board.projectColors[p];
+    return PROJ_COLORS.some(function (c) { return c.k && c.k === k; }) ? k : '';
+  }
+  function pcVar(k) { return k ? 'var(--pc-' + k + ')' : 'var(--purple)'; }
+  function colorName(k) {
+    for (var i = 0; i < PROJ_COLORS.length; i++) if (PROJ_COLORS[i].k === k) return PROJ_COLORS[i].name;
+    return PROJ_COLORS[0].name;
+  }
+  function projChip(p) {
+    var k = projColor(p);
+    return '<span class="chip proj"' + (k ? ' style="--pc:' + pcVar(k) + '"' : '') + '>' + esc(p) + '</span>';
+  }
+  // When the board is filtered to a project with a colour, that colour becomes
+  // the page accent (header glow, progress bar, buttons, chips, menus).
+  function applyAccent() {
+    var k = page === 'board' && filters.project !== 'all' ? projColor(filters.project) : '';
+    var s = document.body.style;
+    if (k) {
+      s.setProperty('--acc', 'var(--pc-' + k + ')');
+      s.setProperty('--acc-2', 'var(--pc-' + k + '-2)');
+      s.setProperty('--acc-ink', 'var(--pc-ink)');
+      document.body.dataset.pc = k;
+    } else {
+      s.removeProperty('--acc'); s.removeProperty('--acc-2'); s.removeProperty('--acc-ink');
+      delete document.body.dataset.pc;
+    }
+  }
+
   // Groups are stored as one text field; commas separate several ("Books, Reporting tags").
   function groupsOf(it) {
     return String(it.group || '').split(',').map(function (g) { return g.trim(); }).filter(Boolean);
@@ -165,7 +204,7 @@
     h += '<button class="more" data-act="more" aria-label="More actions" aria-haspopup="menu" aria-expanded="false">' + ICON.more + '</button>';
     h += '<div class="meta">';
     h += '<button class="pill ' + st + '" data-act="status" aria-haspopup="menu" title="Change status">' + SLAB[st] + '</button>';
-    if (showProject && it.project) h += '<span class="chip proj">' + esc(it.project) + '</span>';
+    if (showProject && it.project) h += projChip(it.project);
     groupsOf(it).forEach(function (g) {
       var on = filters.group !== 'all' && sameText(g, filters.group);
       h += '<button class="chip grp' + (on ? ' on' : '') + '" data-act="group" data-g="' + esc(g) + '" aria-pressed="' + on + '" title="' +
@@ -294,6 +333,7 @@
     }
 
     renderNav();
+    applyAccent();
     if (detailId) renderDetail();
   }
 
@@ -311,8 +351,10 @@
     var projs = projectOrder();
     document.getElementById('navProjects').innerHTML = projs.length ? projs.map(function (p) {
       var n = open.filter(function (i) { return (i.project || '(no project)') === p; }).length;
-      return '<button class="nav-item" data-nav="project" data-v="' + esc(p) + '"' + (page === 'board' && filters.project === p ? ' aria-current="page"' : '') + '>' +
-        '<span class="nav-dot" style="--c:var(--purple)"></span><span>' + esc(p) + '</span><span class="nav-count">' + (n || '') + '</span></button>';
+      var pk = projColor(p);
+      return '<button class="nav-item" data-nav="project" data-v="' + esc(p) + '"' + (pk ? ' style="--acc:' + pcVar(pk) + '"' : '') +
+        (page === 'board' && filters.project === p ? ' aria-current="page"' : '') + '>' +
+        '<span class="nav-dot" style="--c:' + pcVar(projColor(p)) + '"></span><span>' + esc(p) + '</span><span class="nav-count">' + (n || '') + '</span></button>';
     }).join('') : '<p class="nav-empty">No projects yet</p>';
 
     var groups = allGroups();
@@ -756,7 +798,7 @@
     var st = it.status || 'open', pr = it.prio || 'medium';
     detailEl.className = 'modal detail ' + pr;
     var h = '<div class="d-top"><div class="d-crumbs"><span class="d-prio">' + PLAB[pr] + '</span>';
-    if (it.project) h += '<span class="chip proj">' + esc(it.project) + '</span>';
+    if (it.project) h += projChip(it.project);
     groupsOf(it).forEach(function (g) { h += '<span class="chip">' + esc(g) + '</span>'; });
     h += '</div><h2 id="dTitle">' + esc(it.title) + '</h2></div>';
     h += '<div class="d-body">';
@@ -873,10 +915,53 @@
     if (!board.projects.length) { ul.innerHTML = '<li><span class="pn" style="color:var(--text-3)">No projects yet. Add one below.</span></li>'; return; }
     ul.innerHTML = board.projects.map(function (p) {
       var n = board.items.filter(function (i) { return i.project === p; }).length;
-      return '<li><span class="pn">' + esc(p) + '</span><span class="pcount">' + n + ' item' + (n === 1 ? '' : 's') + '</span>' +
+      var k = projColor(p);
+      return '<li><button class="swatch-btn" data-color-for="' + esc(p) + '" aria-haspopup="menu" aria-expanded="false" ' +
+             'aria-label="Colour for ' + esc(p) + ': ' + colorName(k) + '" title="Colour: ' + colorName(k) + '">' +
+             '<span class="sw" style="--c:' + pcVar(k) + '"></span></button>' +
+             '<span class="pn">' + esc(p) + '</span><span class="pcount">' + n + ' item' + (n === 1 ? '' : 's') + '</span>' +
              '<button class="prm" data-p="' + esc(p) + '">Remove</button></li>';
     }).join('');
   }
+
+  // Palette popover shared by the project rows and the "Add a project" row.
+  function openColorPicker(anchor, current, label, onPick) {
+    if (popAnchor === anchor) return closePop(true);
+    var html = '<p class="pop-label">' + esc(label) + '</p><div class="swatch-grid">' + PROJ_COLORS.map(function (c) {
+      return '<button class="swatch" role="menuitemradio" data-color="' + c.k + '" aria-checked="' + (c.k === current) + '" ' +
+        'aria-label="' + c.name + '" title="' + c.name + '"><span class="sw" style="--c:' + pcVar(c.k) + '"></span></button>';
+    }).join('') + '</div>';
+    openPop(anchor, html, function (d) { onPick(d.color || ''); });
+  }
+
+  // Change an existing project's colour: show it straight away, then save.
+  function setProjectColor(name, k) {
+    if (projColor(name) === k) return;
+    var prev = Object.assign({}, board.projectColors);
+    board.projectColors = Object.assign({}, board.projectColors);
+    if (k) board.projectColors[name] = k; else delete board.projectColors[name];
+    renderProjList(); render();
+    api('PATCH', '/api/projects/' + encodeURIComponent(name), { color: k })
+      .then(function (b) { board = b; renderProjList(); render(); })
+      .catch(function (e) { board.projectColors = prev; renderProjList(); render(); pErr.textContent = e.message; });
+  }
+  document.getElementById('plist').addEventListener('click', function (e) {
+    var b = e.target.closest('[data-color-for]'); if (!b) return;
+    var name = b.dataset.colorFor;
+    openColorPicker(b, projColor(name), 'Colour for ' + name, function (k) { setProjectColor(name, k); });
+  });
+
+  // Colour chosen for a project that hasn't been added yet.
+  var newProjColor = '';
+  var newColorBtn = document.getElementById('pNewColor');
+  function syncNewColorBtn() {
+    newColorBtn.querySelector('.sw').style.setProperty('--c', pcVar(newProjColor));
+    newColorBtn.setAttribute('aria-label', 'Colour for the new project: ' + colorName(newProjColor));
+    newColorBtn.title = 'Colour: ' + colorName(newProjColor);
+  }
+  newColorBtn.addEventListener('click', function () {
+    openColorPicker(newColorBtn, newProjColor, 'Colour for new project', function (k) { newProjColor = k; syncNewColorBtn(); });
+  });
   function openProj() { pErr.textContent = ''; document.getElementById('pNewIn').value = ''; renderProjList(); projBg.classList.add('open'); closeMenu(); setTimeout(function () { document.getElementById('pNewIn').focus(); }, 30); }
   function closeProj() { projBg.classList.remove('open'); }
 
@@ -887,8 +972,11 @@
   function addProject() {
     var name = document.getElementById('pNewIn').value.trim();
     if (!name) { pErr.textContent = 'Type a project name.'; return; }
-    api('POST', '/api/projects', { name: name })
-      .then(function (b) { board = b; document.getElementById('pNewIn').value = ''; pErr.textContent = ''; renderProjList(); render(); })
+    api('POST', '/api/projects', { name: name, color: newProjColor })
+      .then(function (b) {
+        board = b; document.getElementById('pNewIn').value = ''; pErr.textContent = '';
+        newProjColor = ''; syncNewColorBtn(); renderProjList(); render();
+      })
       .catch(function (e) { pErr.textContent = e.message; });
   }
   document.getElementById('pAdd').addEventListener('click', addProject);
@@ -1208,6 +1296,7 @@
     page = name === 'snippets' ? 'snippets' : 'board';
     appEl.dataset.page = page;
     document.body.dataset.page = page;
+    applyAccent(); // project colour only applies on the board
     document.getElementById('boardView').hidden = page !== 'board';
     document.getElementById('snippetsView').hidden = page !== 'snippets';
     document.getElementById('topTitle').textContent = page === 'snippets' ? 'Snippets' : 'Board';
