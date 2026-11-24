@@ -27,6 +27,19 @@
   --crit: #e11d48;  --high: #d97706;  --med: #0d9488;  --low: #6b7395;
   --st-open: #6b7395; --st-doing: #2563eb; --st-testing: #0891b2; --st-blocked: #ea580c; --st-done: #16a34a;
 
+  /* project accent palette (light): main shade, lighter shade, text on top */
+  --pc-blue: #2563eb;   --pc-blue-2: #3b82f6;
+  --pc-cyan: #0e7490;   --pc-cyan-2: #0891b2;
+  --pc-teal: #0f766e;   --pc-teal-2: #0d9488;
+  --pc-green: #15803d;  --pc-green-2: #16a34a;
+  --pc-lime: #4d7c0f;   --pc-lime-2: #65a30d;
+  --pc-amber: #b45309;  --pc-amber-2: #d97706;
+  --pc-orange: #c2410c; --pc-orange-2: #ea580c;
+  --pc-rose: #e11d48;   --pc-rose-2: #f43f5e;
+  --pc-pink: #db2777;   --pc-pink-2: #ec4899;
+  --pc-slate: #475569;  --pc-slate-2: #64748b;
+  --pc-ink: #ffffff;
+
   --code-bg: #f7f8fc;
   --hl-kw: #a626a4; --hl-type: #0184bc; --hl-num: #986801; --hl-str: #2b8a3e;
   --hl-fn: #4078f2; --hl-attr: #c45500; --hl-com: #9aa0b8;
@@ -54,6 +67,21 @@
 
   --crit: #fb5476;  --high: #fbbf24;  --med: #2dd4bf;  --low: #8790b5;
   --st-open: #8790b5; --st-doing: #60a5fa; --st-testing: #22d3ee; --st-blocked: #fb923c; --st-done: #34d399;
+
+  /* project accent palette (dark): saturated shades (not pastel) so they stay
+     as vivid as in light mode; the "-2" tint is only a gentle gradient highlight.
+     Dark text on top reads better than white on all of these. */
+  --pc-blue: #3b82f6;   --pc-blue-2: #5b95f8;
+  --pc-cyan: #06b6d4;   --pc-cyan-2: #22c3df;
+  --pc-teal: #14b8a6;   --pc-teal-2: #2cc5b3;
+  --pc-green: #22c55e;  --pc-green-2: #3fd176;
+  --pc-lime: #84cc16;   --pc-lime-2: #96d933;
+  --pc-amber: #f59e0b;  --pc-amber-2: #f8ae2c;
+  --pc-orange: #f97316; --pc-orange-2: #fb8a3c;
+  --pc-rose: #f43f5e;   --pc-rose-2: #f65a75;
+  --pc-pink: #ec4899;   --pc-pink-2: #f062aa;
+  --pc-slate: #8391ab;  --pc-slate-2: #97a3ba;
+  --pc-ink: #0a0f24;
 
   --code-bg: #0b1027;
   --hl-kw: #c792ea; --hl-type: #82aaff; --hl-num: #f78c6c; --hl-str: #c3e88d;
@@ -206,11 +234,13 @@ a { color: var(--acc); }
 }
 .btn:hover { border-color: var(--text-3); }
 .btn.primary {
-  border-color: transparent; color: #fff;
+  border-color: transparent; color: var(--acc-ink, #fff);
   background: linear-gradient(180deg, var(--acc-2), var(--acc));
   box-shadow: 0 6px 18px color-mix(in srgb, var(--acc) 35%, transparent);
 }
 .btn.primary:hover { filter: brightness(1.06); transform: translateY(-1px); }
+/* a tighter, fainter glow in dark mode so it doesn't haze the button colour */
+:root[data-theme="dark"] .btn.primary { box-shadow: 0 4px 12px color-mix(in srgb, var(--acc) 22%, transparent); }
 .btn.danger:hover { color: var(--crit); border-color: color-mix(in srgb, var(--crit) 55%, transparent); }
 .btn.sm { padding: 6px 11px; font-size: 12.5px; border-radius: 8px; }
 .btn:disabled { opacity: .6; cursor: default; transform: none; }
@@ -421,7 +451,8 @@ h1 .acc { color: var(--acc); }
   font-size: 11.5px; font-weight: 500; color: var(--text-2); background: var(--panel-3);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-.chip.proj { color: var(--purple); background: color-mix(in srgb, var(--purple) 12%, transparent); font-weight: 600; }
+/* --pc is set inline per chip when the project has a colour */
+.chip.proj { color: var(--pc, var(--purple)); background: color-mix(in srgb, var(--pc, var(--purple)) 13%, transparent); font-weight: 600; }
 /* description icon sits right after the title text */
 .has-note { display: inline-flex; vertical-align: -2px; margin-left: 6px; color: var(--text-3); }
 .nw { white-space: nowrap; }
@@ -644,6 +675,20 @@ button.chip { border: 0; cursor: pointer; font-family: inherit; transition: back
 .plist { list-style: none; margin: 0 0 12px; padding: 0; display: flex; flex-direction: column; gap: 6px; max-height: 240px; overflow: auto; }
 .plist li { display: flex; align-items: center; gap: 10px; padding: 8px 11px; border-radius: 10px; background: var(--panel-2); border: 1px solid var(--line); }
 .plist .pn { flex: 1; }
+
+/* ---------- project colour picker ---------- */
+.swatch-btn {
+  width: 30px; height: 30px; flex: none; display: grid; place-items: center; padding: 0; cursor: pointer;
+  border-radius: 9px; border: 1px solid var(--line-2); background: var(--panel); transition: .15s;
+}
+.swatch-btn:hover, .swatch-btn[aria-expanded="true"] { border-color: var(--text-3); }
+.sw { width: 16px; height: 16px; border-radius: 50%; background: var(--c); display: block; }
+.swatch-grid { display: grid; grid-template-columns: repeat(6, 34px); gap: 4px; padding: 2px 4px 4px; }
+.pop .swatch { width: 34px; height: 34px; padding: 0; justify-content: center; border-radius: 9px; }
+.pop .swatch .sw { width: 20px; height: 20px; }
+.pop .swatch[aria-checked="true"]::after { content: none; }
+.pop .swatch[aria-checked="true"] .sw { box-shadow: 0 0 0 2px var(--panel), 0 0 0 4px var(--c); }
+.addproj .frow { align-items: center; }
 .plist .pcount { font-size: 12px; color: var(--text-3); }
 .plist .prm { border: 0; background: none; cursor: pointer; font-size: 12px; font-weight: 600; color: var(--text-3); padding: 2px 6px; border-radius: 6px; }
 .plist .prm:hover { color: var(--crit); background: var(--panel-3); }
