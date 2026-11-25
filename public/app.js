@@ -46,6 +46,7 @@
 
   // Local view of server state.
   var board = { projects: [], items: [] };
+  var boardLoaded = false;
   // prio / project come from the sidebar; view comes from the status tiles.
   // group: one entry from an item's comma-separated groups; q: board search text.
   var filters = { prio: 'all', project: 'all', group: 'all', view: 'all', q: '' };
@@ -76,23 +77,299 @@
         if (!r.ok) {
           // Session expired or repo went missing: drop back to the gate screen.
           if (data.code === 'auth' || data.code === 'setup') setTimeout(boot, 0);
-          throw new Error(data.error || ('Request failed (' + r.status + ')'));
+          var e = new Error(data.error || ('Request failed (' + r.status + ')'));
+          // GitHub (or a proxy in front of us) unreachable: worth showing the saved copy.
+          e.offline = r.status === 502 || r.status === 503 || r.status === 504;
+          throw e;
         }
         return data;
       });
+    }, function () {
+      var e = new Error('Can’t reach the server.'); e.offline = true; throw e;
     });
   }
 
+  /* ---------- saved copy for offline use ----------
+   * The last board and snippets loaded, kept in this browser so the app can
+   * still open (with any unsaved changes on top) when GitHub or the server
+   * can't be reached. Cleared on sign out. */
+  var who = '';                 // 'local' or the GitHub login, set in enterApp
+  function cacheKey(k) { return 'tb-cache:' + who + ':' + k; }
+  function readCache(k) { try { return JSON.parse(localStorage.getItem(cacheKey(k)) || 'null'); } catch (_) { return null; } }
+  function writeCache(k, v) { try { localStorage.setItem(cacheKey(k), JSON.stringify(v)); } catch (_) {} }
+  function clearCaches() {
+    try {
+      Object.keys(localStorage).forEach(function (k) {
+        if (k.indexOf('tb-cache:') === 0 || k === 'tb-last-session') localStorage.removeItem(k);
+      });
+    } catch (_) {}
+  }
+  var showingCopy = false;      // on screen is the saved copy, not the latest from the server
+
+  /* ==========================================================
+   * Sync queue
+   *
+   * Every change shows on screen straight away and is queued in the browser
+   * (localStorage, so it survives a refresh), then sent to the server in
+   * order. If the server or GitHub can't be reached, the change stays queued
+   * and is retried, waiting longer each time. Each change is a small
+   * instruction ("set this item's status to Testing"), and the server applies
+   * it to the latest board, so edits from another device aren't overwritten.
+   * The server treats a repeated change as already done, so sending one twice
+   * is harmless.
+   * ========================================================== */
+  var QKEY = 'tb-queue';        // per user, set in enterApp
+  var queue = [];               // [{ id, t, m, u, b, k, label, tries }]
+  var syncMode = 'local';       // 'local' | 'github'
+  var syncState = 'ok';         // 'ok' | 'saving' | 'pending' | 'offline'
+  var flushing = false, retryT = null, retryDelay = 0, syncPaused = false;
+  var failing = false;          // saves are currently failing (label shows it; toasts once)
+  var snipsTouched = false;     // a snippet change was sent: reload the library after
+
+  function rid() { return Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 6); }
+  function readQueue() {
+    try { var q = JSON.parse(localStorage.getItem(QKEY) || '[]'); queue = Array.isArray(q) ? q : []; }
+    catch (_) { /* storage blocked: keep what's in memory */ }
+  }
+  function writeQueue() { try { localStorage.setItem(QKEY, JSON.stringify(queue)); } catch (_) {} }
+  function isSnipOp(op) { return op.t.indexOf('snip.') === 0; }
+
+  // Apply a change to what's on screen. Used when the change is made, and
+  // again after every reload for changes that haven't been saved yet.
+  function applyOp(op) {
+    var b = op.b || {};
+    switch (op.t) {
+      case 'item.add':
+        if (!itemById(b.id)) board.items.push(Object.assign({ status: 'open', createdAt: new Date().toISOString() }, b));
+        break;
+      case 'item.patch':
+        var it = itemById(op.k); if (it) Object.assign(it, b);
+        break;
+      case 'item.del':
+        board.items = board.items.filter(function (i) { return i.id !== op.k; });
+        break;
+      case 'proj.add':
+        if (!board.projects.some(function (p) { return p.toLowerCase() === b.name.toLowerCase(); })) {
+          board.projects.push(b.name);
+          board.projectColors = Object.assign({}, board.projectColors);
+          if (b.color) board.projectColors[b.name] = b.color;
+        }
+        break;
+      case 'proj.color':
+        if (board.projects.indexOf(op.k) >= 0) {
+          board.projectColors = Object.assign({}, board.projectColors);
+          if (b.color) board.projectColors[op.k] = b.color; else delete board.projectColors[op.k];
+        }
+        break;
+      case 'proj.del':
+        board.projects = board.projects.filter(function (p) { return p !== op.k; });
+        if (board.projectColors) delete board.projectColors[op.k];
+        break;
+      case 'snip.add':
+        if (!snipById(b.id)) snippets.unshift(localSnippet(b, null));
+        break;
+      case 'snip.patch':
+        // Most recently updated first, as the server sorts them.
+        var s = snipById(op.k);
+        if (s) { localSnippet(b, s); snippets = [s].concat(snippets.filter(function (x) { return x !== s; })); }
+        break;
+      case 'snip.del':
+        snippets = snippets.filter(function (x) { return x.id !== op.k; });
+        break;
+    }
+  }
+  function applyPending(kind) {
+    queue.forEach(function (op) { if ((kind === 'snip') === isSnipOp(op)) applyOp(op); });
+  }
+
+  // Make a change: show it now, save it in the background.
+  function change(op) {
+    op.id = rid(); op.tries = 0;
+    applyOp(op);
+    if (isSnipOp(op)) renderSnippets();
+    else { render(); if (projBg.classList.contains('open')) renderProjList(); }
+    readQueue(); // pick up anything another tab queued
+    queue.push(op); writeQueue();
+    flush();
+  }
+
+  function dropMessage(op, err) {
+    var what = op.label ? '“' + op.label + '”' : 'that change';
+    if (op.t === 'item.patch' && /not found/i.test(err)) return what + ' was deleted somewhere else, so your change wasn’t saved.';
+    if (op.t === 'snip.patch' && /not found/i.test(err)) return what + ' was deleted somewhere else, so your change wasn’t saved.';
+    if (op.t === 'proj.color' && /no longer exists/i.test(err)) return 'Project ' + what + ' was removed somewhere else, so its colour wasn’t saved.';
+    return 'Couldn’t save ' + what + ': ' + err;
+  }
+
+  // Send one change. Resolves when it's done with (saved, or can never be
+  // saved and was dropped); rejects with .kind when it should be retried.
+  function sendOp(op) {
+    function fail(kind, msg) { var e = new Error(msg); e.kind = kind; return e; }
+    return fetch(op.u, {
+      method: op.m,
+      headers: { 'X-Triage': '1', 'Content-Type': 'application/json' },
+      credentials: 'same-origin',
+      body: op.b ? JSON.stringify(op.b) : undefined
+    }).then(function (r) {
+      return r.json().catch(function () { return {}; }).then(function (data) {
+        if (r.ok) return null;
+        var msg = data.error || ('Request failed (' + r.status + ')');
+        // Signed out or repo gone: keep the change, it's sent after signing back in.
+        if (data.code === 'auth' || data.code === 'setup') throw fail('auth', msg);
+        if (r.status === 502 || r.status === 503 || r.status === 504) throw fail('retry', msg);
+        if (r.status >= 500) {
+          // A server bug won't fix itself; give up after a few tries so one bad
+          // change can't hold up everything behind it.
+          if (++op.tries < 4) throw fail('retry', msg);
+          return dropMessage(op, msg);
+        }
+        return dropMessage(op, msg); // 4xx: this change can't be applied
+      });
+    }, function () { throw fail('offline', 'Can’t reach the server.'); });
+  }
+
+  function drain() {
+    readQueue();
+    var op = queue[0];
+    if (!op) return Promise.resolve();
+    return sendOp(op).then(function (dropped) {
+      if (isSnipOp(op)) snipsTouched = true;
+      readQueue();
+      queue = queue.filter(function (x) { return x.id !== op.id; });
+      writeQueue();
+      if (dropped) toast(dropped);
+      setSync(queue.length ? 'saving' : 'ok');
+      return drain();
+    }, function (e) {
+      // Keep the retry count for server errors.
+      readQueue();
+      queue.forEach(function (x) { if (x.id === op.id) x.tries = op.tries; });
+      writeQueue();
+      throw e;
+    });
+  }
+
+  function flush() {
+    if (flushing || syncPaused) return;
+    readQueue();
+    if (!queue.length) {
+      // Nothing to send, but the screen is the saved copy: try loading the latest.
+      if (showingCopy) { clearTimeout(retryT); retryT = null; loadBoard(); }
+      else setSync('ok');
+      return;
+    }
+    clearTimeout(retryT); retryT = null;
+    flushing = true;
+    // While retrying, keep showing "Not synced" (with the new count) instead of flickering.
+    setSync(failing ? syncState : 'saving');
+    // Only one tab sends at a time (where the browser supports it).
+    var run = navigator.locks ? navigator.locks.request('tb-sync', drain) : drain();
+    run.then(function () {
+      flushing = false; retryDelay = 0;
+      setSync('ok');
+      if (failing) toast('All changes saved', true);
+      failing = false;
+      // Catch up with the saved version (and anything changed on another device).
+      loadBoard();
+      if (snipsTouched) { snipsTouched = false; loadSnippets(); }
+    }, function (e) {
+      flushing = false;
+      if (e.kind === 'auth') { syncPaused = true; setSync('pending'); boot(); return; }
+      setSync(e.kind === 'offline' && navigator.onLine === false ? 'offline' : 'pending');
+      if (!failing) toast((syncMode === 'github' ? 'Couldn’t save to GitHub' : 'Couldn’t save') + '. Your changes are kept and will be retried.');
+      failing = true;
+      retryDelay = Math.min(Math.max(2000, retryDelay * 2), 60000);
+      retryT = setTimeout(flush, retryDelay);
+    });
+  }
+
+  function setSync(state) {
+    syncState = state;
+    var n = queue.length, gh = syncMode === 'github';
+    var waiting = n + ' change' + (n === 1 ? '' : 's');
+    var text = {
+      ok: gh ? 'Synced to GitHub' : 'Saved locally',
+      saving: 'Saving…',
+      pending: n
+        ? (gh ? 'Not synced' : 'Not saved') + ' · ' + waiting + ' · retrying'
+        : (gh ? 'Can’t reach GitHub' : 'Can’t reach the server') + ' · retrying',
+      offline: n ? 'Offline · ' + waiting + ' waiting' : 'Offline · showing saved copy'
+    }[state];
+    var tip = state === 'pending' || state === 'offline'
+      ? 'Your changes are kept in this browser and will be saved automatically. Click to try again now.'
+      : (gh ? 'Every change is saved as a commit in your GitHub repo.' : 'Changes are saved to this computer.');
+    document.querySelectorAll('[data-sync]').forEach(function (el) {
+      el.dataset.state = state;
+      el.querySelector('.sync-txt').textContent = text;
+      el.title = tip;
+      el.setAttribute('aria-label', text + '. ' + tip);
+    });
+  }
+
+  document.addEventListener('click', function (e) {
+    if (!e.target.closest('[data-sync]')) return;
+    if (syncState === 'pending' || syncState === 'offline') { retryDelay = 0; flush(); }
+  });
+  window.addEventListener('online', function () { retryDelay = 0; flush(); });
+  window.addEventListener('offline', function () { if (queue.length && !flushing) setSync('offline'); });
+  // Another tab queued or saved something: keep the count in the label right.
+  window.addEventListener('storage', function (e) {
+    if (e.key !== QKEY) return;
+    readQueue();
+    if (!flushing) setSync(queue.length ? syncState === 'ok' ? 'saving' : syncState : 'ok');
+  });
+  window.addEventListener('beforeunload', function (e) {
+    if (!queue.length) return;
+    e.preventDefault(); e.returnValue = ''; // changes are kept either way; this is a heads-up
+  });
+
   function loadBoard() {
     return api('GET', '/api/board').then(function (b) {
+      writeCache('board', b);
       board = b;
+      applyPending('board'); // changes not saved yet stay on screen
+      boardLoaded = true;
+      if (showingCopy) {
+        showingCopy = false;
+        loadSnippets(); // the library may be the saved copy too
+        if (!queue.length) {
+          if (failing) toast('Back online', true);
+          failing = false; retryDelay = 0;
+          setSync('ok');
+        }
+      }
       // keep the active project filter valid
       if (filters.project !== 'all' && projectOrder().indexOf(filters.project) < 0) filters.project = 'all';
       if (filters.group !== 'all' && !allGroups().some(function (g) { return sameText(g, filters.group); })) filters.group = 'all';
       render();
     }).catch(function (e) {
-      boardEl.innerHTML = '<p class="empty">Could not reach the server.<br>Is it still running in your terminal?<br><br>' + esc(e.message) + '</p>';
+      // Already showing the board: keep it rather than blanking the screen.
+      if (boardLoaded) { if (e.offline) goOffline(); return; }
+      var copy = e.offline && readCache('board');
+      if (copy) {
+        board = copy;
+        applyPending('board');
+        boardLoaded = true;
+        goOffline();
+        render();
+        return;
+      }
+      boardEl.innerHTML = '<p class="empty">' + (e.offline
+        ? 'Can’t load your board right now.<br>' + esc(e.message) + '<br><br>It will load once the connection is back.'
+        : 'Could not load the board.<br><br>' + esc(e.message)) + '</p>';
+      if (e.offline) goOffline();
     });
+  }
+
+  // Couldn't reach the server/GitHub to load: say so, and keep trying.
+  function goOffline() {
+    showingCopy = true;
+    if (!failing) { failing = true; toast('You’re offline. Showing your last saved copy; changes will sync when you’re back.'); }
+    setSync(navigator.onLine === false ? 'offline' : 'pending');
+    if (!retryT && !flushing) {
+      retryDelay = Math.min(Math.max(2000, retryDelay * 2), 60000);
+      retryT = setTimeout(function () { retryT = null; flush(); }, retryDelay);
+    }
   }
 
   /* ---------- helpers ---------- */
@@ -465,13 +742,14 @@
     render();
   });
 
-  /* ---------- mutations (optimistic: update locally, then reload) ---------- */
+  /* ---------- item changes (shown now, saved through the sync queue) ---------- */
   function patchItem(id, patch) {
-    var it = itemById(id); if (it) Object.assign(it, patch); render(); // instant feedback
-    api('PATCH', '/api/items/' + id, patch).then(loadBoard).catch(function (e) { toast(e.message); loadBoard(); });
+    var it = itemById(id);
+    change({ t: 'item.patch', m: 'PATCH', u: '/api/items/' + encodeURIComponent(id), b: patch, k: id, label: it ? it.title : '' });
   }
   function deleteItem(id) {
-    api('DELETE', '/api/items/' + id).then(loadBoard).catch(function (e) { toast(e.message); });
+    var it = itemById(id);
+    change({ t: 'item.del', m: 'DELETE', u: '/api/items/' + encodeURIComponent(id), k: id, label: it ? it.title : '' });
   }
   function confirmDelete(id) {
     var it = itemById(id); if (!it) return;
@@ -891,9 +1169,6 @@
       group: document.getElementById('mGroup').value.trim(),
       note: document.getElementById('mNote').value.trim()
     };
-    var req = editingId
-      ? api('PATCH', '/api/items/' + editingId, payload)
-      : api('POST', '/api/items', payload);
     // if adding into a filtered-out priority/project/status, relax filters so it's visible
     if (!editingId) {
       if (filters.prio !== 'all' && filters.prio !== payload.prio) filters.prio = 'all';
@@ -902,8 +1177,14 @@
       if (filters.group !== 'all' && !groupsOf(payload).some(function (g) { return sameText(g, filters.group); })) filters.group = 'all';
       if (filters.q && !matchesSearch(payload)) { filters.q = ''; boardSearch.value = ''; }
     }
-    req.then(function () { closeModal(); return loadBoard(); })
-       .catch(function (e) { mErr.textContent = e.message; });
+    if (editingId) {
+      patchItem(editingId, payload);
+    } else {
+      // The id is made here so the new item can be shown (and changed) before it's saved.
+      payload.id = 'i-' + rid();
+      change({ t: 'item.add', m: 'POST', u: '/api/items', b: payload, k: payload.id, label: payload.title });
+    }
+    closeModal();
   });
 
   /* ---------- manage projects modal ---------- */
@@ -937,13 +1218,7 @@
   // Change an existing project's colour: show it straight away, then save.
   function setProjectColor(name, k) {
     if (projColor(name) === k) return;
-    var prev = Object.assign({}, board.projectColors);
-    board.projectColors = Object.assign({}, board.projectColors);
-    if (k) board.projectColors[name] = k; else delete board.projectColors[name];
-    renderProjList(); render();
-    api('PATCH', '/api/projects/' + encodeURIComponent(name), { color: k })
-      .then(function (b) { board = b; renderProjList(); render(); })
-      .catch(function (e) { board.projectColors = prev; renderProjList(); render(); pErr.textContent = e.message; });
+    change({ t: 'proj.color', m: 'PATCH', u: '/api/projects/' + encodeURIComponent(name), b: { color: k }, k: name, label: name });
   }
   document.getElementById('plist').addEventListener('click', function (e) {
     var b = e.target.closest('[data-color-for]'); if (!b) return;
@@ -972,12 +1247,14 @@
   function addProject() {
     var name = document.getElementById('pNewIn').value.trim();
     if (!name) { pErr.textContent = 'Type a project name.'; return; }
-    api('POST', '/api/projects', { name: name, color: newProjColor })
-      .then(function (b) {
-        board = b; document.getElementById('pNewIn').value = ''; pErr.textContent = '';
-        newProjColor = ''; syncNewColorBtn(); renderProjList(); render();
-      })
-      .catch(function (e) { pErr.textContent = e.message; });
+    if (name.length > 80) { pErr.textContent = 'Keep the name under 80 characters.'; return; }
+    if (board.projects.some(function (p) { return p.toLowerCase() === name.toLowerCase(); })) {
+      pErr.textContent = 'That project already exists.'; return;
+    }
+    document.getElementById('pNewIn').value = ''; pErr.textContent = '';
+    var color = newProjColor;
+    newProjColor = ''; syncNewColorBtn();
+    change({ t: 'proj.add', m: 'POST', u: '/api/projects', b: { name: name, color: color }, k: name, label: name });
   }
   document.getElementById('pAdd').addEventListener('click', addProject);
   document.getElementById('pNewIn').addEventListener('keydown', function (e) { if (e.key === 'Enter') addProject(); });
@@ -991,9 +1268,8 @@
       : '“' + name + '” will be removed from your project list.';
     confirmDialog({ title: 'Remove this project?', message: msg, ok: 'Remove' }).then(function (ok) {
       if (!ok) return;
-      api('DELETE', '/api/projects/' + encodeURIComponent(name))
-        .then(function (bd) { board = bd; if (filters.project === name) filters.project = 'all'; renderProjList(); render(); })
-        .catch(function (e) { pErr.textContent = e.message; });
+      if (filters.project === name) filters.project = 'all';
+      change({ t: 'proj.del', m: 'DELETE', u: '/api/projects/' + encodeURIComponent(name), k: name, label: name });
     });
   });
 
@@ -1067,11 +1343,42 @@
   function loadSnippets() {
     snipsLoaded = true; // set up front so concurrent callers don't double-fetch
     return api('GET', '/api/snippets').then(function (list) {
-      snippets = list; renderSnippets();
+      writeCache('snips', list);
+      snippets = list;
+      applyPending('snip'); // changes not saved yet stay on screen
+      renderSnippets();
     }).catch(function (e) {
-      snipsLoaded = false;
+      snipsLoaded = false; // try again next time the page is opened
+      if (e.offline) {
+        goOffline();
+        if (snippets.length) return; // keep what's on screen
+        var copy = readCache('snips');
+        if (copy) { snippets = copy; applyPending('snip'); renderSnippets(); return; }
+      }
       snipsEl.innerHTML = '<p class="empty">Could not load snippets.<br><br>' + esc(e.message) + '</p>';
     });
+  }
+
+  // Same clean-up the server does (lib/model.js), so a snippet looks the same
+  // before and after it's saved. Updates `into` if given, else makes a new one.
+  function snipTags(raw) {
+    var out = [];
+    String(raw || '').split(',').forEach(function (t) {
+      t = t.replace(/[\r\n]+/g, ' ').trim().slice(0, 30).toLowerCase();
+      if (t && out.indexOf(t) < 0 && out.length < 20) out.push(t);
+    });
+    return out;
+  }
+  function localSnippet(p, into) {
+    var now = new Date().toISOString();
+    var s = into || { id: p.id, created: now, title: '', language: 'deluge', type: '', tags: [], description: '', code: '' };
+    ['title', 'language', 'type', 'description', 'code'].forEach(function (k) { if (k in p) s[k] = p[k]; });
+    if ('tags' in p) s.tags = snipTags(p.tags);
+    s.updated = now;
+    return s;
+  }
+  function snipSlug(title) {
+    return String(title || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 50) || 'snippet';
   }
 
   function snipMatches(s) {
@@ -1193,7 +1500,7 @@
       openSnip(s);
     } else if (act === 'sdel') {
       confirmDialog({ title: 'Delete this snippet?', message: '“' + s.title + '” will be removed from your code library.' }).then(function (ok) {
-        if (ok) api('DELETE', '/api/snippets/' + encodeURIComponent(s.id)).then(loadSnippets).catch(function (er) { toast(er.message); });
+        if (ok) change({ t: 'snip.del', m: 'DELETE', u: '/api/snippets/' + encodeURIComponent(s.id), k: s.id, label: s.title });
       });
     }
   });
@@ -1253,18 +1560,15 @@
       description: document.getElementById('sDesc').value.trim(),
       code: code
     };
-    var btn = this; btn.disabled = true;
-    var wasNew = !editingSnip;
-    var req = editingSnip
-      ? api('PATCH', '/api/snippets/' + encodeURIComponent(editingSnip), payload)
-      : api('POST', '/api/snippets', payload);
-    req.then(function (saved) {
-      closeSnip();
-      if (wasNew && saved && saved.id) selectedSnip = saved.id;
-      return loadSnippets();
-    })
-       .catch(function (e) { sErr.textContent = e.message; })
-       .then(function () { btn.disabled = false; });
+    if (editingSnip) {
+      change({ t: 'snip.patch', m: 'PATCH', u: '/api/snippets/' + encodeURIComponent(editingSnip), b: payload, k: editingSnip, label: title });
+    } else {
+      // The id is made here so the new snippet can be shown (and changed) before it's saved.
+      payload.id = snipSlug(title) + '-' + Math.random().toString(36).slice(2, 6);
+      selectedSnip = payload.id;
+      change({ t: 'snip.add', m: 'POST', u: '/api/snippets', b: payload, k: payload.id, label: title });
+    }
+    closeSnip();
   });
 
   /* ---------- global keys ---------- */
@@ -1360,7 +1664,15 @@
   function enterApp(s) {
     setGated(false);
     var gh = s.mode === 'github';
-    document.getElementById('syncTxt').textContent = gh ? 'Synced to GitHub' : 'Saved locally';
+    // Changes waiting to be saved belong to this user (or to local mode).
+    syncMode = s.mode;
+    who = gh ? s.user.login.toLowerCase() : 'local';
+    QKEY = 'tb-queue:' + who;
+    // Remembered so the app can still open from the saved copy when offline.
+    try { localStorage.setItem('tb-last-session', JSON.stringify(s)); } catch (_) {}
+    syncPaused = false;
+    readQueue();
+    setSync(queue.length ? 'saving' : 'ok');
     document.getElementById('signOut').hidden = !gh;
     var av = document.getElementById('whoAvatar');
     av.hidden = !gh;
@@ -1381,17 +1693,37 @@
     showPage(location.hash === '#snippets' ? 'snippets' : 'board');
     loadBoard();
     if (!snipsLoaded) loadSnippets(); // for the sidebar count
+    flush(); // send anything left over from last time (or from before signing in again)
   }
 
+  var bootT = null;
   function boot() {
+    clearTimeout(bootT);
     api('GET', '/api/session').then(function (s) {
       if (!s.signedIn) return gateLogin();
       if (!s.ready) return gateSetup(s);
       enterApp(s);
     }).catch(function (e) {
-      boardEl.innerHTML = '<p class="empty">Could not reach the server.<br>Is it still running?<br><br>' + esc(e.message) + '</p>';
+      // Already showing the board (e.g. checking the session after a failed
+      // save): keep it on screen, the sync label shows what's wrong.
+      if (boardLoaded) { bootT = setTimeout(boot, 10000); return; }
+      // Offline: open as the last signed-in user, from the saved copy.
+      // Saving waits until the session can be checked again.
+      var last = null;
+      try { last = JSON.parse(localStorage.getItem('tb-last-session') || 'null'); } catch (_) {}
+      if (e.offline && last && last.ready) { enterApp(last); return; }
+      boardEl.innerHTML = '<p class="empty">' + (e.offline
+        ? 'Can’t connect right now.<br>' + esc(e.message)
+        : 'Could not start the board.<br>' + esc(e.message)) + '<br><br>Trying again…</p>';
+      bootT = setTimeout(boot, 5000);
     });
   }
+
+  // Signing out: don't leave a copy of the board behind in this browser.
+  // (Covers the sidebar button and the one on the setup screen.)
+  document.addEventListener('submit', function (e) {
+    if (/\/auth\/logout$/.test(e.target.getAttribute('action') || '')) clearCaches();
+  });
 
   /* ---------- go ---------- */
   boot();

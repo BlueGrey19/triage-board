@@ -265,7 +265,18 @@ a { color: var(--acc); }
   display: inline-flex; align-items: center; gap: 6px; padding: 2px 9px; border-radius: 99px;
   border: 1px solid var(--line-2); font-size: 10.5px; letter-spacing: .08em; color: var(--text-2);
 }
-.live i { width: 6px; height: 6px; border-radius: 50%; background: var(--st-done); box-shadow: 0 0 0 3px color-mix(in srgb, var(--st-done) 22%, transparent); }
+.live i { --dot: var(--st-done); width: 6px; height: 6px; border-radius: 50%; background: var(--dot); box-shadow: 0 0 0 3px color-mix(in srgb, var(--dot) 22%, transparent); }
+/* Sync status: a button so "Not synced" can be clicked to retry straight away. */
+button.live { background: none; font-family: inherit; line-height: inherit; cursor: default; }
+.live[data-state="saving"] i { --dot: var(--st-doing); animation: sync-pulse 1s ease-in-out infinite; }
+.live[data-state="pending"] { color: var(--st-blocked); border-color: color-mix(in srgb, var(--st-blocked) 45%, transparent); cursor: pointer; }
+.live[data-state="pending"] i { --dot: var(--st-blocked); }
+.live[data-state="offline"] { cursor: pointer; }
+.live[data-state="offline"] i { --dot: var(--text-3); }
+.live[data-state="pending"]:hover, .live[data-state="offline"]:hover { background: var(--hover, color-mix(in srgb, var(--text) 6%, transparent)); }
+.live:focus-visible { outline: 2px solid var(--acc); outline-offset: 2px; }
+@keyframes sync-pulse { 50% { opacity: .35; } }
+@media (prefers-reduced-motion: reduce) { .live[data-state="saving"] i { animation: none; } }
 h1 { margin: 0; font-size: clamp(22px, 3vw, 30px); font-weight: 800; letter-spacing: -.02em; line-height: 1.15; }
 h1 .acc { color: var(--acc); }
 .summary { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; margin-top: 14px; }

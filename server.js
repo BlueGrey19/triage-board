@@ -104,7 +104,10 @@ async function getSession(req, res) {
       const t = await refreshOnce(s.r);
       s = { ...s, t: t.accessToken, r: t.refreshToken || s.r, e: t.expiresAt };
       setSession(res, s);
-    } catch (_) {
+    } catch (e) {
+      // GitHub unreachable: keep the session and let the caller try again,
+      // rather than signing the user out over a network blip.
+      if (e && e.network) throw e;
       s = null;
       clearSession(res);
     }
@@ -212,10 +215,10 @@ app.get('/api/board', h(async (req, res) => {
 app.post('/api/projects', h(async (req, res) => {
   const name = oneLine(req.body && req.body.name, 80);
   if (!name) throw new HttpError(400, 'Project name required.');
+  // Already there (e.g. this is a retry of an add that went through): leave it.
+  // The browser stops people adding a duplicate on purpose.
   const board = await req.store.mutateBoard(b => {
-    if (b.projects.some(p => p.toLowerCase() === name.toLowerCase())) {
-      throw new HttpError(409, 'That project already exists.');
-    }
+    if (b.projects.some(p => p.toLowerCase() === name.toLowerCase())) return b;
     b.projects.push(name);
     const color = cleanProjectColor(req.body && req.body.color);
     if (color) b.projectColors[name] = color;
@@ -253,8 +256,14 @@ app.post('/api/items', h(async (req, res) => {
   const body = req.body || {};
   if (!oneLine(body.title, 200)) throw new HttpError(400, 'Title required.');
   const item = sanitizeItem(body, null);
-  await req.store.mutateBoard(b => { b.items.push(item); }, 'Add item: ' + item.title);
-  res.json(item);
+  // Adding the same id twice (a retried add) keeps the one already saved.
+  const saved = await req.store.mutateBoard(b => {
+    const existing = b.items.find(i => i.id === item.id);
+    if (existing) return existing;
+    b.items.push(item);
+    return item;
+  }, 'Add item: ' + item.title);
+  res.json(saved);
 }));
 
 app.patch('/api/items/:id', h(async (req, res) => {
@@ -267,11 +276,10 @@ app.patch('/api/items/:id', h(async (req, res) => {
   res.json(item);
 }));
 
+// Already gone counts as done, so a retried delete doesn't fail.
 app.delete('/api/items/:id', h(async (req, res) => {
   await req.store.mutateBoard(b => {
-    const it = b.items.find(i => i.id === req.params.id);
-    if (!it) throw new HttpError(404, 'Item not found.');
-    b.items = b.items.filter(i => i !== it);
+    b.items = b.items.filter(i => i.id !== req.params.id);
   }, 'Delete item');
   res.json({ ok: true });
 }));
@@ -294,6 +302,9 @@ app.post('/api/snippets', h(async (req, res) => {
   const body = req.body || {};
   if (!oneLine(body.title, 120)) throw new HttpError(400, 'Title required.');
   const s = sanitizeSnippet(body, null);
+  // A retried add whose first attempt went through: keep what's saved.
+  const existing = await req.store.getSnippet(s.id);
+  if (existing) return res.json(existing.snippet);
   await req.store.putSnippet(s, null, 'Add snippet: ' + s.title);
   res.json(s);
 }));
@@ -311,8 +322,8 @@ app.patch('/api/snippets/:id', h(async (req, res) => {
 
 app.delete('/api/snippets/:id', h(async (req, res) => {
   const id = snippetId(req);
-  const ok = await req.store.deleteSnippet(id, 'Delete snippet: ' + id);
-  if (!ok) throw new HttpError(404, 'Snippet not found.');
+  // Already gone counts as done, so a retried delete doesn't fail.
+  await req.store.deleteSnippet(id, 'Delete snippet: ' + id);
   res.json({ ok: true });
 }));
 
@@ -323,6 +334,8 @@ app.use((err, req, res, next) => { // eslint-disable-line no-unused-vars
     return res.status(err.status).json({ error: err.message, code: err.code });
   }
   if (err instanceof GitHubError) {
+    // Already logged (one line) where the retries ran out.
+    if (err.network) return res.status(503).json({ error: err.message, code: 'network' });
     if (err.status === 401) {
       if (MODE === 'github') clearSession(res);
       return res.status(401).json({ error: 'Your GitHub session expired. Sign in again.', code: 'auth' });
