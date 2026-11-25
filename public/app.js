@@ -276,7 +276,7 @@
       flushing = false;
       if (e.kind === 'auth') { syncPaused = true; setSync('pending'); boot(); return; }
       setSync(e.kind === 'offline' && navigator.onLine === false ? 'offline' : 'pending');
-      if (!failing) toast((syncMode === 'github' ? 'Couldn’t save to GitHub' : 'Couldn’t save') + '. Your changes are kept and will be retried.');
+      if (!failing) toastIfFree((syncMode === 'github' ? 'Couldn’t save to GitHub' : 'Couldn’t save') + '. Your changes are kept and will be retried.');
       failing = true;
       retryDelay = Math.min(Math.max(2000, retryDelay * 2), 60000);
       retryT = setTimeout(flush, retryDelay);
@@ -364,7 +364,7 @@
   // Couldn't reach the server/GitHub to load: say so, and keep trying.
   function goOffline() {
     showingCopy = true;
-    if (!failing) { failing = true; toast('You’re offline. Showing your last saved copy; changes will sync when you’re back.'); }
+    if (!failing) { failing = true; toastIfFree('You’re offline. Showing your last saved copy; changes will sync when you’re back.'); }
     setSync(navigator.onLine === false ? 'offline' : 'pending');
     if (!retryT && !flushing) {
       retryDelay = Math.min(Math.max(2000, retryDelay * 2), 60000);
@@ -743,9 +743,31 @@
   });
 
   /* ---------- item changes (shown now, saved through the sync queue) ---------- */
-  function patchItem(id, patch) {
+  // Only the fields that actually change are sent. Afterwards the message
+  // offers Undo, which sends the old values back as a change of its own.
+  var ITEM_DEFAULTS = { status: 'open', prio: 'medium', project: '', group: '', note: '' };
+  function patchItem(id, patch, undoing) {
     var it = itemById(id);
-    change({ t: 'item.patch', m: 'PATCH', u: '/api/items/' + encodeURIComponent(id), b: patch, k: id, label: it ? it.title : '' });
+    if (!it) { if (undoing) toast('That item no longer exists, so there’s nothing to undo.'); return; }
+    var diff = {}, before = {}, any = false;
+    Object.keys(patch).forEach(function (k) {
+      var old = it[k] == null ? (ITEM_DEFAULTS[k] || '') : it[k];
+      if (patch[k] !== old) { diff[k] = patch[k]; before[k] = old; any = true; }
+    });
+    if (!any) return;
+    var title = it.title;
+    change({ t: 'item.patch', m: 'PATCH', u: '/api/items/' + encodeURIComponent(id) + (undoing ? '?undo=1' : ''), b: diff, k: id, label: title });
+    if (undoing) return toast('Change undone', true);
+    toast(changeText(it.title, diff), false, function () { patchItem(id, before, true); });
+  }
+  function changeText(title, diff) {
+    var t = '“' + (title.length > 40 ? title.slice(0, 39) + '…' : title) + '” ';
+    var keys = Object.keys(diff);
+    if (keys.length > 1 || keys[0] === 'title') return t.replace(/ $/, '') + ' updated';
+    if (keys[0] === 'status') return t + (diff.status === 'done' ? 'marked done' : 'moved to ' + SLAB[diff.status]);
+    if (keys[0] === 'prio') return t + 'set to ' + PLAB[diff.prio] + ' priority';
+    if (keys[0] === 'project') return t + (diff.project ? 'moved to ' + diff.project : 'removed from its project');
+    return t + 'updated';
   }
   function deleteItem(id) {
     var it = itemById(id);
@@ -1274,14 +1296,48 @@
   });
 
   /* ---------- toast ---------- */
-  var toastEl = null, toastT = null;
-  function toast(msg, ok) {
-    if (!toastEl) { toastEl = document.createElement('div'); toastEl.className = 'toast'; toastEl.setAttribute('role', 'status'); document.body.appendChild(toastEl); }
-    toastEl.textContent = msg;
+  // A message at the bottom of the screen. With `undo` it also shows an Undo
+  // button (and Ctrl+Z works) for 6 seconds; hovering or focusing it keeps it open.
+  var toastEl = null, toastMsg, toastBtn, toastT = null, toastMs = 0, toastHeld = false, toastUndo = null;
+  function toast(msg, ok, undo) {
+    if (!toastEl) {
+      toastEl = document.createElement('div'); toastEl.className = 'toast'; toastEl.setAttribute('role', 'status');
+      toastEl.innerHTML = '<span class="toast-msg"></span><button type="button" class="toast-btn" aria-keyshortcuts="Control+Z" hidden>Undo</button>';
+      toastMsg = toastEl.firstChild; toastBtn = toastEl.lastChild;
+      toastBtn.addEventListener('click', runUndo);
+      toastEl.addEventListener('mouseenter', holdToast);
+      toastEl.addEventListener('focusin', holdToast);
+      toastEl.addEventListener('mouseleave', releaseToast);
+      toastEl.addEventListener('focusout', function (e) { if (!toastEl.contains(e.relatedTarget)) releaseToast(); });
+      document.body.appendChild(toastEl);
+    }
+    var hadFocus = toastEl.contains(document.activeElement);
+    toastMsg.textContent = msg;
+    toastUndo = undo || null;
+    toastBtn.hidden = !undo;
     toastEl.classList.toggle('ok', !!ok);
+    toastEl.classList.toggle('act', !!undo);
     toastEl.classList.add('show');
+    if (hadFocus && !undo) { toastHeld = false; document.activeElement.blur(); }
+    toastMs = undo ? 6000 : ok ? 1600 : 3200;
     clearTimeout(toastT);
-    toastT = setTimeout(function () { toastEl.classList.remove('show'); }, ok ? 1600 : 3200);
+    if (!toastHeld) toastT = setTimeout(hideToast, toastMs);
+  }
+  // Sync problems are already shown on the label, so they don't push an Undo off screen.
+  function toastIfFree(msg) { if (!toastUndo) toast(msg); }
+  function hideToast() { toastEl.classList.remove('show'); toastUndo = null; toastHeld = false; }
+  function holdToast() { toastHeld = true; clearTimeout(toastT); }
+  function releaseToast() {
+    if (!toastHeld) return;
+    toastHeld = false; clearTimeout(toastT);
+    if (toastEl.classList.contains('show')) toastT = setTimeout(hideToast, toastMs);
+  }
+  function runUndo() {
+    var f = toastUndo; if (!f) return false;
+    var hadFocus = toastEl.contains(document.activeElement);
+    hideToast(); f();
+    if (hadFocus) toastBtn.blur();
+    return true;
   }
 
   /* ==========================================================
@@ -1586,6 +1642,12 @@
     // Ignored while typing, with a window open, or with Ctrl/Cmd/Alt held.
     var tag = (e.target.tagName || '').toLowerCase();
     var typing = tag === 'input' || tag === 'textarea' || tag === 'select' || e.target.isContentEditable;
+    // Ctrl+Z undoes the last change while its message is showing. In a text
+    // field it's left alone, so it undoes typing as usual.
+    if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && (e.key === 'z' || e.key === 'Z')) {
+      if (!typing && toastUndo && runUndo()) e.preventDefault();
+      return;
+    }
     if (typing || e.ctrlKey || e.metaKey || e.altKey || document.querySelector('.modal-bg.open') || appEl.classList.contains('gated')) return;
     if (e.key === '/') { e.preventDefault(); (page === 'snippets' ? searchEl : boardSearch).focus(); }
     else if ((e.key === 'n' || e.key === 'N') && page === 'board') { e.preventDefault(); openAdd(); }

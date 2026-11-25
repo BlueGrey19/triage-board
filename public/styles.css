@@ -763,6 +763,16 @@ button.chip { border: 0; cursor: pointer; font-family: inherit; transition: back
 }
 .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
 .toast.ok { border-color: var(--st-done); }
+.toast.act { display: flex; align-items: center; gap: 14px; padding: 6px 6px 6px 16px; border-color: var(--line-2); width: max-content; max-width: calc(100vw - 32px); box-sizing: border-box; }
+.toast.act.show { pointer-events: auto; }
+.toast-msg { min-width: 0; overflow: hidden; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; }
+.toast-btn {
+  flex: none; font: inherit; font-weight: 600; color: var(--acc); background: transparent;
+  border: 0; border-radius: 8px; padding: 6px 12px; cursor: pointer;
+}
+.toast-btn:hover { background: color-mix(in srgb, var(--text) 8%, transparent); }
+.toast-btn:focus-visible { outline: 2px solid var(--acc); outline-offset: 1px; }
+.toast-btn[hidden] { display: none; }
 
 /* ---------- responsive ---------- */
 @media (max-width: 1279px) {

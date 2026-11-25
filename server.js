@@ -272,7 +272,7 @@ app.patch('/api/items/:id', h(async (req, res) => {
     if (idx < 0) throw new HttpError(404, 'Item not found.');
     b.items[idx] = sanitizeItem(req.body || {}, b.items[idx]);
     return b.items[idx];
-  }, 'Update item');
+  }, it => (req.query.undo === '1' ? 'Undo change: ' : 'Update item: ') + it.title);
   res.json(item);
 }));
 
