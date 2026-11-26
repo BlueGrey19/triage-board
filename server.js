@@ -269,6 +269,33 @@ app.post('/api/items', h(async (req, res) => {
   res.json(saved);
 }));
 
+// Quick add: many items (with steps) in one commit. Ids come from the browser,
+// so a retried batch skips the items already saved.
+app.post('/api/items/batch', h(async (req, res) => {
+  const list = req.body && req.body.items;
+  if (!Array.isArray(list) || !list.length || list.length > 100) throw new HttpError(400, 'Add between 1 and 100 items.');
+  const items = list.map(raw => {
+    const it = sanitizeItem(raw && typeof raw === 'object' ? raw : {}, null);
+    if (!it.title || !raw || raw.id !== it.id) throw new HttpError(400, 'Every item needs a title and an id.');
+    return it;
+  });
+  const added = await req.store.mutateBoard(b => {
+    const fresh = [];
+    items.forEach(it => {
+      if (b.items.some(x => x.id === it.id)) return;
+      if (it.project && !it.stage) it.stage = projectStage(b, it.project);
+      b.items.push(it);
+      fresh.push(it);
+    });
+    return fresh;
+  }, fresh => {
+    if (fresh.length === 1) return 'Add item: ' + fresh[0].title;
+    const msg = 'Add ' + fresh.length + ' items: ' + fresh.map(i => i.title).join(', ');
+    return msg.length > 72 ? msg.slice(0, 71).trimEnd() + '…' : msg;
+  });
+  res.json({ ok: true, added: added.length });
+}));
+
 app.patch('/api/items/:id', h(async (req, res) => {
   const item = await req.store.mutateBoard(b => {
     const idx = b.items.findIndex(i => i.id === req.params.id);

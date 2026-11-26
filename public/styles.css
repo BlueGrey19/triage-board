@@ -700,6 +700,44 @@ button.chip { border: 0; cursor: pointer; font-family: inherit; transition: back
 .frow .fld { flex: 1; }
 .merr { min-height: 16px; margin: 0 0 10px; font-size: 12.5px; color: var(--crit); }
 .macts { display: flex; gap: 10px; justify-content: flex-end; margin-top: 6px; }
+/* quick add */
+.qa .fld.qa-list { margin-bottom: 12px; }
+.qa-list textarea { min-height: 120px; line-height: 1.5; font-family: "JetBrains Mono", monospace; font-size: 13px; white-space: pre; overflow: auto; }
+.qa-hint { margin: 6px 0 0; font-size: 12px; color: var(--text-3); }
+.qa-head { min-height: 18px; margin-bottom: 6px; font-size: 12.5px; color: var(--text-2); }
+.qa-prev { max-height: 300px; overflow-y: auto; margin-bottom: 14px; padding: 4px 8px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel-2); }
+.qa-prev[hidden] { display: none; }
+.qa-item { padding: 5px 0; border-bottom: 1px solid var(--line); }
+.qa-item:last-child { border-bottom: 0; }
+.qa-row { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
+.qa-row:last-child { margin-bottom: 0; }
+.qa-step { padding-left: 22px; }
+.qa-row input {
+  flex: 1; min-width: 0; padding: 6px 9px; border-radius: 8px; font-size: 13.5px;
+  border: 1px solid transparent; background: transparent; color: var(--text); transition: .15s;
+}
+.qa-row input:hover { border-color: var(--line-2); }
+.qa-row input:focus { outline: 0; border-color: var(--acc); background: var(--panel); box-shadow: 0 0 0 3px color-mix(in srgb, var(--acc) 20%, transparent); }
+.qa-title { font-weight: 600; }
+.qa-stext { font-size: 13px !important; color: var(--text-2) !important; }
+.qa-prio {
+  flex: none; padding: 5px 7px; border-radius: 8px; font-size: 12.5px;
+  border: 1px solid var(--line-2); background: var(--panel); color: var(--text);
+}
+.qa-prio:focus-visible, .qa-rm:focus-visible { outline: 2px solid var(--acc); outline-offset: 1px; }
+.qa-rm {
+  flex: none; width: 26px; height: 26px; display: grid; place-items: center; padding: 0; border: 0; border-radius: 6px;
+  background: none; cursor: pointer; font-size: 18px; line-height: 1; color: var(--text-3);
+}
+.qa-rm:hover { background: var(--panel-3); color: var(--text); }
+@media (max-width: 700px) {
+  #qaBg { padding: 0; }
+  /* the preview takes the leftover height and scrolls, so the buttons stay in view */
+  .modal.qa { max-width: none; height: 100vh; height: 100dvh; display: flex; flex-direction: column; border-radius: 0; border: 0; padding: 16px; }
+  .qa-list textarea { height: 92px; min-height: 84px; }
+  .qa .fld { margin-bottom: 9px; }
+  .qa-prev { flex: 1 1 0; min-height: 90px; max-height: none; }
+}
 .code-in { font-family: "JetBrains Mono", monospace !important; font-size: 12.5px !important; min-height: 220px !important; line-height: 1.5; white-space: pre; tab-size: 2; }
 .plist { list-style: none; margin: 0 0 12px; padding: 0; display: flex; flex-direction: column; gap: 6px; max-height: 240px; overflow: auto; }
 .plist li { display: flex; align-items: center; gap: 10px; padding: 8px 11px; border-radius: 10px; background: var(--panel-2); border: 1px solid var(--line); }

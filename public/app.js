@@ -163,6 +163,14 @@
           board.items.push(added);
         }
         break;
+      case 'item.batch':
+        (b.items || []).forEach(function (n) {
+          if (itemById(n.id)) return;
+          var bi = Object.assign({ status: 'open', createdAt: new Date().toISOString() }, n);
+          if (bi.project) bi.stage = projStage(bi.project); else delete bi.stage;
+          board.items.push(bi);
+        });
+        break;
       case 'item.patch':
         var it = itemById(op.k);
         if (it) {
@@ -1134,7 +1142,7 @@
     });
     syncSelect(sel);
   }
-  var SELECT_IDS = ['mProj', 'mStage', 'mPrio', 'sLang', 'archProj', 'archStage', 'archGrp'];
+  var SELECT_IDS = ['mProj', 'mStage', 'mPrio', 'qaProj', 'qaPrio', 'sLang', 'archProj', 'archStage', 'archGrp'];
   SELECT_IDS.forEach(function (id) { enhanceSelect(document.getElementById(id)); });
   function syncSelects() { SELECT_IDS.forEach(function (id) { syncSelect(document.getElementById(id)); }); }
 
@@ -1227,13 +1235,18 @@
   }
   // Groups are comma-separated, so suggest for the entry being typed (like tags).
   // In a project, the activities of the chosen stage come first.
-  function groupSuggestions() {
-    var i = document.getElementById('mProj').value ? stageIdx(document.getElementById('mStage').value) : -1;
+  function groupSuggestions(project, stage) {
+    if (project === undefined) { project = document.getElementById('mProj').value; stage = document.getElementById('mStage').value; }
+    var i = project ? stageIdx(stage) : -1;
     return i < 0 ? allGroups() : STAGES[i].acts.concat(allGroups().filter(function (g) {
       return !STAGES[i].acts.some(function (a) { return sameText(a, g); });
     }));
   }
   attachSuggest(document.getElementById('mGroup'), groupSuggestions, true);
+  attachSuggest(document.getElementById('qaGroup'), function () {
+    var p = document.getElementById('qaProj').value;
+    return groupSuggestions(p, p ? projStage(p) : '');
+  }, true);
   attachSuggest(document.getElementById('sTags'), function () {
     var all = []; snippets.forEach(function (s) { all = all.concat(s.tags); });
     return uniqueSorted(all);
@@ -1653,6 +1666,171 @@
       change({ t: 'item.add', m: 'POST', u: '/api/items', b: payload, k: payload.id, label: payload.title });
     }
     closeModal();
+  });
+
+  /* ---------- quick add: paste a list, make many items ---------- */
+  var qaBg = document.getElementById('qaBg');
+  var qaText = document.getElementById('qaText');
+  var qaPrev = document.getElementById('qaPrev');
+  var MAX_STEPS = 50;
+  var qaList = [];        // the preview: { title, note, prio, own (prio set by hand), steps: [text] }
+  var qaDropped = 0;      // steps over the per-item limit
+  var qaTimer = null;
+
+  // Text -> [{ title, note, steps }]. Top-level lines are items; indented lines are
+  // steps of the item above (or an item, if there is none yet).
+  function parseQuickAdd(text) {
+    var out = [];
+    String(text || '').split(/\r?\n/).forEach(function (line) {
+      var indented = /^[ \t]/.test(line);
+      var t = line.replace(/^[ \t]+/, '')
+        .replace(/^(?:[-*•–·]|\d+[.)]|\(\d+\)|[a-z][.)])(?:\s+|$)/i, '').trim();
+      if (!t) return;
+      var cut = t;
+      if (t.length > 200) {
+        cut = t.slice(0, 200);
+        var sp = cut.lastIndexOf(' ');
+        if (t.charAt(200) !== ' ' && sp > 0) cut = cut.slice(0, sp);
+        cut = cut.trim();
+      }
+      if (indented && out.length) {
+        var cur = out[out.length - 1];
+        if (cur.steps.length < MAX_STEPS) cur.steps.push(cut); else cur.dropped = (cur.dropped || 0) + 1;
+      } else {
+        out.push({ title: cut, note: t.length > 200 ? t : '', steps: [] });
+      }
+    });
+    return out;
+  }
+
+  function qaParse() {
+    var batchPrio = document.getElementById('qaPrio').value;
+    qaDropped = 0;
+    qaTimer = null;
+    qaList = parseQuickAdd(qaText.value).map(function (n) {
+      qaDropped += n.dropped || 0;
+      return { title: n.title, note: n.note, prio: batchPrio, own: false, steps: n.steps };
+    });
+    qaRender();
+  }
+  function qaValid() { return qaList.filter(function (n) { return n.title.trim(); }); }
+  function qaRender() {
+    var h = '';
+    qaList.forEach(function (n, i) {
+      h += '<div class="qa-item" data-i="' + i + '"><div class="qa-row">' +
+        '<input class="qa-title" aria-label="Item title" maxlength="200" value="' + esc(n.title) + '">' +
+        '<select class="qa-prio" aria-label="Item priority">' +
+        ['critical', 'high', 'medium', 'low'].map(function (p) {
+          return '<option value="' + p + '"' + (p === n.prio ? ' selected' : '') + '>' + p.charAt(0).toUpperCase() + p.slice(1) + '</option>';
+        }).join('') + '</select>' +
+        '<button type="button" class="qa-rm" data-rm="item" aria-label="Remove ' + esc(n.title) + '">&times;</button></div>';
+      n.steps.forEach(function (st, j) {
+        h += '<div class="qa-row qa-step" data-j="' + j + '">' +
+          '<input class="qa-stext" aria-label="Step text" maxlength="200" value="' + esc(st) + '">' +
+          '<button type="button" class="qa-rm" data-rm="step" aria-label="Remove step ' + esc(st) + '">&times;</button></div>';
+      });
+      h += '</div>';
+    });
+    qaPrev.innerHTML = h;
+    qaPrev.hidden = !qaList.length;
+    qaUpdate();
+  }
+  function qaUpdate() {
+    var v = qaValid(), steps = 0;
+    v.forEach(function (n) { steps += n.steps.filter(function (s) { return s.trim(); }).length; });
+    document.getElementById('qaCount').textContent = v.length
+      ? v.length + (v.length === 1 ? ' item' : ' items') + (steps ? ' · ' + steps + (steps === 1 ? ' step' : ' steps') : '') : '';
+    var over = v.length > 100;
+    document.getElementById('qaErr').textContent = over ? 'Up to 100 items at a time.'
+      : qaDropped ? qaDropped + ' extra ' + (qaDropped === 1 ? 'step was' : 'steps were') + ' left out (50 steps per item at most).' : '';
+    var add = document.getElementById('qaAdd');
+    add.textContent = v.length ? 'Add ' + v.length + (v.length === 1 ? ' item' : ' items') : 'Add items';
+    add.disabled = !v.length || over;
+  }
+  qaText.addEventListener('input', function () { clearTimeout(qaTimer); qaTimer = setTimeout(qaParse, 150); });
+  qaPrev.addEventListener('input', function (e) {
+    var row = e.target.closest('.qa-item'); if (!row) return;
+    var n = qaList[+row.dataset.i], t = e.target;
+    if (t.classList.contains('qa-title')) {
+      n.title = t.value;
+      row.querySelector('[data-rm="item"]').setAttribute('aria-label', 'Remove ' + t.value);
+    } else if (t.classList.contains('qa-stext')) {
+      n.steps[+t.closest('.qa-step').dataset.j] = t.value;
+    }
+    qaUpdate();
+  });
+  qaPrev.addEventListener('change', function (e) {
+    if (!e.target.classList.contains('qa-prio')) return;
+    var n = qaList[+e.target.closest('.qa-item').dataset.i];
+    n.prio = e.target.value; n.own = true;
+  });
+  qaPrev.addEventListener('click', function (e) {
+    var btn = e.target.closest('[data-rm]'); if (!btn) return;
+    var i = +btn.closest('.qa-item').dataset.i;
+    if (btn.dataset.rm === 'item') qaList.splice(i, 1);
+    else qaList[i].steps.splice(+btn.closest('.qa-step').dataset.j, 1);
+    qaRender();
+    (qaPrev.querySelector('input') || qaText).focus();
+  });
+  document.getElementById('qaPrio').addEventListener('change', function () {
+    var p = this.value;
+    qaList.forEach(function (n) { if (!n.own) n.prio = p; });
+    qaRender();
+  });
+
+  function openQuickAdd() {
+    var sel = document.getElementById('qaProj');
+    sel.innerHTML = '<option value="">(no project)</option>' + board.projects.map(function (p) { return '<option>' + esc(p) + '</option>'; }).join('');
+    sel.value = filters.project !== 'all' && board.projects.indexOf(filters.project) >= 0 ? filters.project : '';
+    document.getElementById('qaPrio').value = filters.prio !== 'all' ? filters.prio : 'medium';
+    document.getElementById('qaGroup').value = filters.group !== 'all' ? filters.group : '';
+    qaText.value = '';
+    syncSelects();
+    qaParse();
+    qaBg.classList.add('open');
+    setTimeout(function () { qaText.focus(); }, 30);
+  }
+  function qaShut() {
+    clearTimeout(qaTimer);
+    qaBg.classList.remove('open');
+    document.getElementById('qaBtn').focus({ preventScroll: true });
+  }
+  // Asks first when there's a list that would be lost.
+  function qaClose() {
+    if (!qaText.value.trim()) return qaShut();
+    confirmDialog({ title: 'Discard this list?', message: 'The items you pasted won’t be added.', ok: 'Discard' }).then(function (ok) {
+      if (ok) qaShut();
+    });
+  }
+  function qaSubmit() {
+    if (qaTimer) { clearTimeout(qaTimer); qaParse(); } // the list changed a moment ago
+    var v = qaValid();
+    if (!v.length || v.length > 100) return;
+    var project = document.getElementById('qaProj').value, group = document.getElementById('qaGroup').value.trim();
+    var items = v.map(function (n) {
+      var it = { id: 'i-' + rid(), title: n.title.trim(), project: project, prio: n.prio, group: group, status: 'open' };
+      if (n.note) it.note = n.note;
+      var steps = n.steps.map(function (s) { return s.trim(); }).filter(Boolean);
+      if (steps.length) it.subtasks = steps.map(function (s) { return { id: 's-' + rid(), text: s }; });
+      return it;
+    });
+    // relax filters so every new item is visible (as the single Add does)
+    function hides(f) { return items.some(function (it) { return !f(it); }); }
+    if (filters.prio !== 'all' && hides(function (it) { return it.prio === filters.prio; })) filters.prio = 'all';
+    if (filters.project !== 'all' && filters.project !== project) filters.project = 'all';
+    if (filters.view !== 'all' && filters.view !== 'active') filters.view = 'all';
+    if (filters.group !== 'all' && hides(function (it) { return groupsOf(it).some(function (g) { return sameText(g, filters.group); }); })) filters.group = 'all';
+    if (filters.q && hides(matchesSearch)) { filters.q = ''; boardSearch.value = ''; }
+    qaShut();
+    change({ t: 'item.batch', m: 'POST', u: '/api/items/batch', b: { items: items }, k: items[0].id, label: items.length + ' items' });
+    toast(items.length + (items.length === 1 ? ' item added' : ' items added'), true);
+  }
+  document.getElementById('qaBtn').addEventListener('click', openQuickAdd);
+  document.getElementById('qaCancel').addEventListener('click', qaClose);
+  qaBg.addEventListener('click', function (e) { if (e.target === qaBg) qaClose(); });
+  document.getElementById('qaAdd').addEventListener('click', qaSubmit);
+  qaText.addEventListener('keydown', function (e) {
+    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); qaSubmit(); }
   });
 
   /* ---------- manage projects modal ---------- */
@@ -2346,6 +2524,7 @@
     if (e.key === 'Escape') {
       if (closePop(true)) return;
       if (closeConfirm(false)) return;
+      if (qaBg.classList.contains('open')) return qaClose();
       if (modalBg.classList.contains('open')) return closeModal();
       if (snipBg.classList.contains('open')) return closeSnip();
       if (projBg.classList.contains('open')) return closeProj();
@@ -2365,6 +2544,7 @@
     if (typing || e.ctrlKey || e.metaKey || e.altKey || document.querySelector('.modal-bg.open') || appEl.classList.contains('gated')) return;
     if (e.key === '/') { e.preventDefault(); (page === 'snippets' ? searchEl : page === 'archive' ? archSearch : boardSearch).focus(); }
     else if ((e.key === 'n' || e.key === 'N') && page === 'board') { e.preventDefault(); openAdd(); }
+    else if ((e.key === 'q' || e.key === 'Q') && page === 'board') { e.preventDefault(); openQuickAdd(); }
   });
 
   /* ==========================================================

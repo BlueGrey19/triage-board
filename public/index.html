@@ -155,6 +155,9 @@
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></svg><span>Compact</span>
             </button>
           </div>
+          <button class="btn" id="qaBtn" aria-keyshortcuts="Q" title="Add many items from a pasted list (Q)">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></svg>Quick add
+          </button>
           <button class="btn primary" id="addBtn">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>Add item
           </button>
@@ -255,6 +258,37 @@
     <div class="macts">
       <button class="btn" id="mCancel">Cancel</button>
       <button class="btn primary" id="mSave">Add to board</button>
+    </div>
+  </div>
+</div>
+
+<!-- Quick add modal -->
+<div class="modal-bg" id="qaBg">
+  <div class="modal wide qa" role="dialog" aria-modal="true" aria-labelledby="qaTitle">
+    <h2 id="qaTitle">Quick add</h2>
+    <p class="merr" id="qaErr" role="alert"></p>
+    <div class="fld qa-list">
+      <label class="sr-only" for="qaText">List to add</label>
+      <textarea id="qaText" rows="6" aria-label="List to add" aria-describedby="qaHint" placeholder="- Fix login redirect&#10;    - Check callback URL&#10;- Update invoice template"></textarea>
+      <p class="qa-hint" id="qaHint">One item per line. Indented lines become checklist steps.</p>
+    </div>
+    <div class="frow qa-set">
+      <div class="fld"><label for="qaProj">Project</label><select id="qaProj"></select></div>
+      <div class="fld"><label for="qaPrio">Priority</label>
+        <select id="qaPrio" data-dots="prio">
+          <option value="critical">Critical</option>
+          <option value="high">High</option>
+          <option value="medium" selected>Medium</option>
+          <option value="low">Low</option>
+        </select>
+      </div>
+      <div class="fld"><label for="qaGroup">Group <span class="opt">(optional)</span></label><input id="qaGroup" placeholder="e.g. Books, Analytics" maxlength="80" autocomplete="off"></div>
+    </div>
+    <div class="qa-head"><b id="qaCount" aria-live="polite"></b></div>
+    <div class="qa-prev" id="qaPrev"></div>
+    <div class="macts">
+      <button class="btn" id="qaCancel">Cancel</button>
+      <button class="btn primary" id="qaAdd">Add items</button>
     </div>
   </div>
 </div>
