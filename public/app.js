@@ -36,6 +36,7 @@
     chev:  '<svg class="chev" viewBox="0 0 24 24" aria-hidden="true"><polyline points="6 9 12 15 18 9"/></svg>',
     back:  '<svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="15 18 9 12 15 6"/></svg>',
     copy:  '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>',
+    steps: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="4"/><polyline points="8 12 11 15 16 9"/></svg>',
     code:  '<svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>',
     active:  '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="3"/></svg>',
     doing:   '<svg viewBox="0 0 24 24" aria-hidden="true"><polygon points="7 4 19 12 7 20 7 4"/></svg>',
@@ -148,6 +149,25 @@
       case 'item.del':
         board.items = board.items.filter(function (i) { return i.id !== op.k; });
         break;
+      case 'sub.add':
+        var sit = itemById(op.k);
+        if (sit) {
+          if (!sit.subtasks) sit.subtasks = [];
+          if (!sit.subtasks.some(function (x) { return x.id === b.id; })) sit.subtasks.push({ id: b.id, text: b.text, done: false });
+        }
+        break;
+      case 'sub.patch':
+        var pit = itemById(op.k);
+        var pst = pit && (pit.subtasks || []).filter(function (x) { return x.id === op.sk; })[0];
+        if (pst) Object.assign(pst, b);
+        break;
+      case 'sub.del':
+        var dit = itemById(op.k);
+        if (dit && dit.subtasks) {
+          dit.subtasks = dit.subtasks.filter(function (x) { return x.id !== op.sk; });
+          if (!dit.subtasks.length) delete dit.subtasks;
+        }
+        break;
       case 'proj.add':
         if (!board.projects.some(function (p) { return p.toLowerCase() === b.name.toLowerCase(); })) {
           board.projects.push(b.name);
@@ -196,6 +216,7 @@
   function dropMessage(op, err) {
     var what = op.label ? '“' + op.label + '”' : 'that change';
     if (op.t === 'item.patch' && /not found/i.test(err)) return what + ' was deleted somewhere else, so your change wasn’t saved.';
+    if (op.t.indexOf('sub.') === 0 && /not found/i.test(err)) return what + ' wasn’t saved because its item or step was deleted somewhere else.';
     if (op.t === 'snip.patch' && /not found/i.test(err)) return what + ' was deleted somewhere else, so your change wasn’t saved.';
     if (op.t === 'proj.color' && /no longer exists/i.test(err)) return 'Project ' + what + ' was removed somewhere else, so its colour wasn’t saved.';
     return 'Couldn’t save ' + what + ': ' + err;
@@ -434,10 +455,11 @@
     });
     return out.sort(function (a, b) { return a.localeCompare(b); });
   }
+  function stepsDone(it) { return (it.subtasks || []).filter(function (s) { return s.done; }).length; }
   function matchesSearch(it) {
     var q = filters.q.trim().toLowerCase();
     if (!q) return true;
-    var hay = [it.title, it.note, it.group, it.project].join('\n').toLowerCase();
+    var hay = [it.title, it.note, it.group, it.project].concat((it.subtasks || []).map(function (s) { return s.text; })).join('\n').toLowerCase();
     return q.split(/\s+/).every(function (t) { return hay.indexOf(t) >= 0; });
   }
   // skip: name of one filter to ignore (used to count what the group menu would show).
@@ -487,6 +509,12 @@
       h += '<button class="chip grp' + (on ? ' on' : '') + '" data-act="group" data-g="' + esc(g) + '" aria-pressed="' + on + '" title="' +
         (on ? 'Stop filtering by ' : 'Show only ') + esc(g) + '">' + esc(g) + '</button>';
     });
+    var steps = it.subtasks || [];
+    if (steps.length) {
+      var sdone = stepsDone(it), label = sdone + ' of ' + steps.length + ' steps done';
+      h += '<span class="steps' + (sdone === steps.length ? ' all' : '') + '" title="' + label + '" aria-label="' + label + '">' +
+        ICON.steps + sdone + '/' + steps.length + '</span>';
+    }
     h += '</div></article>';
     return h;
   }
@@ -1092,9 +1120,97 @@
   var detailBg = document.getElementById('detailBg');
   var detailEl = document.getElementById('detail');
 
+  var MAX_STEPS = 50;
+  var detailRendering = false;   // true while the popup is being rebuilt (ignore the blur this causes)
+
+  function stepRow(sid) {
+    var rows = detailEl.querySelectorAll('.sub');
+    for (var i = 0; i < rows.length; i++) if (rows[i].dataset.sid === sid) return rows[i];
+    return null;
+  }
+  function stepTextBtn(text) {
+    return '<button type="button" class="sub-text" title="Click to edit">' + esc(text) + '</button>';
+  }
+  function checklistHTML(it) {
+    var steps = it.subtasks || [], done = stepsDone(it);
+    var h = '<div class="d-section"><div class="d-labelrow"><p class="d-label">Checklist</p>';
+    if (steps.length) h += '<span class="sub-count">' + done + ' of ' + steps.length + '</span>';
+    h += '</div>';
+    if (steps.length) {
+      h += '<div class="sub-bar' + (done === steps.length ? ' all' : '') + '" role="progressbar" aria-label="Checklist progress" aria-valuemin="0" aria-valuemax="' + steps.length +
+        '" aria-valuenow="' + done + '"><span style="width:' + Math.round(done / steps.length * 100) + '%"></span></div>';
+      h += '<ul class="sub-list">' + steps.map(function (s) {
+        return '<li class="sub' + (s.done ? ' done' : '') + '" data-sid="' + esc(s.id) + '">' +
+          '<input type="checkbox" class="sub-cb"' + (s.done ? ' checked' : '') + ' aria-label="Done: ' + esc(s.text) + '">' +
+          stepTextBtn(s.text) +
+          '<button type="button" class="sub-rm" aria-label="Remove step: ' + esc(s.text) + '" title="Remove step">&times;</button></li>';
+      }).join('') + '</ul>';
+    }
+    var full = steps.length >= MAX_STEPS;
+    h += '<input type="text" class="sub-add" maxlength="200" autocomplete="off" aria-label="Add a step" placeholder="' +
+      (full ? 'Step limit reached (' + MAX_STEPS + ')' : 'Add a step') + '"' + (full ? ' disabled' : '') + '></div>';
+    return h;
+  }
+  // Swap a step's text for an input. Used when clicked, and to put an
+  // unfinished edit back after the popup is rebuilt.
+  function startStepEdit(row, value) {
+    var btn = row.querySelector('.sub-text'); if (!btn) return null;
+    var inp = document.createElement('input');
+    inp.type = 'text'; inp.className = 'sub-edit'; inp.maxLength = 200; inp.autocomplete = 'off';
+    inp.setAttribute('aria-label', 'Edit step');
+    inp.value = value != null ? value : btn.textContent;
+    btn.replaceWith(inp);
+    return inp;
+  }
+  // Leave edit mode without re-rendering. save: store the new text if it changed.
+  function endStepEdit(inp, save) {
+    var row = inp.closest('.sub'); if (!row || inp.dataset.fin) return;
+    inp.dataset.fin = '1';
+    var it = itemById(detailId), sid = row.dataset.sid;
+    var st = it && (it.subtasks || []).filter(function (s) { return s.id === sid; })[0];
+    var text = inp.value.replace(/[\r\n]+/g, ' ').trim();
+    if (save && st && text && text !== st.text) {
+      change({ t: 'sub.patch', m: 'PATCH', u: stepUrl(it.id, sid), b: { text: text }, k: it.id, sk: sid, label: text });
+    } else {
+      inp.outerHTML = stepTextBtn(st ? st.text : inp.value);
+    }
+  }
+  function stepUrl(itemId, sid) {
+    return '/api/items/' + encodeURIComponent(itemId) + '/subtasks' + (sid ? '/' + encodeURIComponent(sid) : '');
+  }
+
+  // Rebuilding the popup mid-click would swallow the click (e.g. finishing a
+  // step edit on blur, then clicking another step's ×). So while a pointer is
+  // down inside it, the rebuild waits until just after the click.
+  var detailPointer = false, detailStale = false;
+  detailEl.addEventListener('pointerdown', function () { detailPointer = true; });
+  function detailPointerUp() {
+    if (!detailPointer) return;
+    detailPointer = false;
+    if (detailStale) { detailStale = false; setTimeout(function () { if (detailId) renderDetail(); }, 0); }
+  }
+  window.addEventListener('pointerup', detailPointerUp);
+  window.addEventListener('pointercancel', detailPointerUp);
+
   function renderDetail() {
     var it = itemById(detailId);
     if (!it) { closeDetail(); return; }
+    if (detailPointer) { detailStale = true; return; }
+    // The popup is rebuilt from scratch, and this can run while the user is
+    // typing (a background save reloads the board). Remember what they were
+    // doing and put it back afterwards.
+    var keep = { scroll: 0 };
+    var body0 = detailEl.querySelector('.d-body'); if (body0) keep.scroll = body0.scrollTop;
+    var addIn = detailEl.querySelector('.sub-add');
+    if (addIn) keep.add = { v: addIn.value, s: addIn.selectionStart, e: addIn.selectionEnd };
+    var ed = detailEl.querySelector('.sub-edit');
+    if (ed && !ed.dataset.fin && ed.closest('.sub')) keep.edit = { sid: ed.closest('.sub').dataset.sid, v: ed.value, s: ed.selectionStart, e: ed.selectionEnd };
+    var ae = document.activeElement;
+    if (ae && detailEl.contains(ae)) {
+      if (ae === addIn) keep.focus = { add: true };
+      else if (ed && ae === ed) keep.focus = { edit: true };
+      else if (ae.closest('.sub')) keep.focus = { sid: ae.closest('.sub').dataset.sid, cls: ae.className };
+    }
     var st = it.status || 'open', pr = it.prio || 'medium';
     detailEl.className = 'modal detail ' + pr;
     var h = '<div class="d-top"><div class="d-crumbs"><span class="d-prio">' + PLAB[pr] + '</span>';
@@ -1106,12 +1222,37 @@
       STATUSES.map(function (s) { return '<button data-ds="' + s + '" data-s="' + s + '" aria-pressed="' + (s === st) + '">' + SLAB[s] + '</button>'; }).join('') + '</div></div>';
     h += '<div class="d-section"><p class="d-label">Description</p>' +
       (it.note ? '<p class="d-note">' + esc(it.note) + '</p>' : '<p class="d-note muted">No description yet. Click Edit to add one.</p>') + '</div>';
+    h += checklistHTML(it);
     var created = fmtDate(it.createdAt);
     if (created) h += '<p class="d-dates">Created ' + created + '</p>';
     h += '</div>';
     h += '<div class="d-foot"><button class="btn sm danger" data-dact="del">Delete</button><span class="grow"></span>' +
       '<button class="btn sm" data-dact="close">Close</button><button class="btn sm primary" data-dact="edit">Edit</button></div>';
+    detailRendering = true;
     detailEl.innerHTML = h;
+    detailRendering = false;
+
+    var body1 = detailEl.querySelector('.d-body'); if (body1 && keep.scroll) body1.scrollTop = keep.scroll;
+    var add1 = detailEl.querySelector('.sub-add');
+    if (add1 && keep.add && !add1.disabled) {
+      add1.value = keep.add.v;
+      try { add1.setSelectionRange(keep.add.s, keep.add.e); } catch (_) {}
+    }
+    var focusEl = null;
+    if (keep.edit) {
+      var row = stepRow(keep.edit.sid), inp = row && startStepEdit(row, keep.edit.v);
+      if (inp && keep.focus && keep.focus.edit) {
+        focusEl = inp;
+        try { inp.setSelectionRange(keep.edit.s, keep.edit.e); } catch (_) {}
+      }
+    }
+    if (keep.focus && keep.focus.add) focusEl = add1;
+    else if (keep.focus && keep.focus.sid) {
+      var r2 = stepRow(keep.focus.sid);
+      // If that step is gone (just removed), carry on typing in the add box.
+      focusEl = (r2 && r2.querySelector('.' + keep.focus.cls.split(' ')[0])) || add1;
+    }
+    if (focusEl && !focusEl.disabled) focusEl.focus({ preventScroll: true });
   }
   function openDetail(id) {
     detailId = id; renderDetail();
@@ -1128,11 +1269,51 @@
     if (e.target === detailBg) return closeDetail();
     var s = e.target.closest('[data-ds]');
     if (s && detailId) { var it = itemById(detailId); if (it && it.status !== s.dataset.ds) patchItem(detailId, { status: s.dataset.ds }); return; }
+    var rm = e.target.closest('.sub-rm'), tx = e.target.closest('.sub-text');
+    if ((rm || tx) && detailId) {
+      var row = (rm || tx).closest('.sub'), sid = row.dataset.sid;
+      if (tx) { var inp = startStepEdit(row); if (inp) { inp.focus(); inp.select(); } return; }
+      var rit = itemById(detailId), rst = rit && (rit.subtasks || []).filter(function (s) { return s.id === sid; })[0];
+      if (rst) change({ t: 'sub.del', m: 'DELETE', u: stepUrl(rit.id, sid), k: rit.id, sk: sid, label: rst.text });
+      return;
+    }
     var a = e.target.closest('[data-dact]'); if (!a) return;
     var id = detailId;
     if (a.dataset.dact === 'close') closeDetail();
     else if (a.dataset.dact === 'edit') { closeDetail(); openEdit(id); }
     else if (a.dataset.dact === 'del') confirmDelete(id);
+  });
+  detailBg.addEventListener('change', function (e) {
+    var cb = e.target.closest('.sub-cb'); if (!cb || !detailId) return;
+    var it = itemById(detailId), sid = cb.closest('.sub').dataset.sid;
+    var st = it && (it.subtasks || []).filter(function (s) { return s.id === sid; })[0];
+    if (st && st.done !== cb.checked) change({ t: 'sub.patch', m: 'PATCH', u: stepUrl(it.id, sid), b: { done: cb.checked }, k: it.id, sk: sid, label: st.text });
+  });
+  detailBg.addEventListener('keydown', function (e) {
+    var t = e.target;
+    if (!t.classList) return;
+    if (t.classList.contains('sub-edit')) {
+      if (e.key !== 'Enter' && e.key !== 'Escape') return;
+      e.preventDefault(); e.stopPropagation(); // Esc cancels the edit, not the popup
+      if (e.isComposing) return;
+      var row = t.closest('.sub'), sid = row && row.dataset.sid;
+      endStepEdit(t, e.key === 'Enter');
+      var r2 = sid && stepRow(sid), b = r2 && r2.querySelector('.sub-text');
+      if (b) b.focus();
+    } else if (t.classList.contains('sub-add')) {
+      if (e.key === 'Escape' && t.value) { e.stopPropagation(); t.value = ''; return; }
+      if (e.key !== 'Enter' || e.isComposing) return;
+      e.preventDefault();
+      var text = t.value.replace(/[\r\n]+/g, ' ').trim(), it = itemById(detailId);
+      if (!text || !it || (it.subtasks || []).length >= MAX_STEPS) return;
+      t.value = ''; // cleared first so the rebuilt popup keeps the box empty and focused
+      var sid2 = 's-' + rid();
+      change({ t: 'sub.add', m: 'POST', u: stepUrl(it.id), b: { id: sid2, text: text }, k: it.id, label: text });
+    }
+  });
+  detailBg.addEventListener('focusout', function (e) {
+    if (detailRendering || !e.target.classList || !e.target.classList.contains('sub-edit')) return;
+    endStepEdit(e.target, true);
   });
 
   /* ---------- add / edit modal ---------- */

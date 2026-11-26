@@ -22,7 +22,7 @@ const express = require('express');
 require('./lib/env').loadEnv(path.join(__dirname, '.env'));
 
 const {
-  HttpError, SNIPPET_ID_RE, normalizeBoard, cleanProjectColor, oneLine, sanitizeItem, sanitizeSnippet
+  HttpError, SNIPPET_ID_RE, SUBTASK_ID_RE, MAX_SUBTASKS, sanitizeSubtask, normalizeBoard, cleanProjectColor, oneLine, sanitizeItem, sanitizeSnippet
 } = require('./lib/model');
 const { GitHubError, request, authorizeUrl, exchangeCode, refreshToken } = require('./lib/github');
 const { parseCookies, serializeCookie, createSealer } = require('./lib/session');
@@ -274,6 +274,74 @@ app.patch('/api/items/:id', h(async (req, res) => {
     return b.items[idx];
   }, it => (req.query.undo === '1' ? 'Undo change: ' : 'Update item: ') + it.title);
   res.json(item);
+}));
+
+/* ---------- checklist steps ---------- */
+
+function stepId(req) {
+  const sid = String(req.params.sid || '');
+  if (!SUBTASK_ID_RE.test(sid)) throw new HttpError(400, 'Bad step id.');
+  return sid;
+}
+
+// A retried add (same step id) returns the item unchanged.
+app.post('/api/items/:id/subtasks', h(async (req, res) => {
+  const body = req.body || {};
+  const step = sanitizeSubtask(body, null);
+  if (!step.text) throw new HttpError(400, 'Step text required.');
+  let title = '';
+  const item = await req.store.mutateBoard(b => {
+    const it = b.items.find(i => i.id === req.params.id);
+    if (!it) throw new HttpError(404, 'Item not found.');
+    title = it.title;
+    if (!Array.isArray(it.subtasks)) it.subtasks = [];
+    if (it.subtasks.some(s => s.id === step.id)) return it;
+    if (it.subtasks.length >= MAX_SUBTASKS) throw new HttpError(400, 'This item already has ' + MAX_SUBTASKS + ' steps.');
+    it.subtasks.push(step);
+    return it;
+  }, () => 'Add step: ' + step.text + ' (' + title + ')');
+  res.json(item);
+}));
+
+app.patch('/api/items/:id/subtasks/:sid', h(async (req, res) => {
+  const sid = stepId(req);
+  const body = req.body || {};
+  let verb = 'Edit step: ', label = '', title = '';
+  const item = await req.store.mutateBoard(b => {
+    const it = b.items.find(i => i.id === req.params.id);
+    if (!it) throw new HttpError(404, 'Item not found.');
+    const idx = (it.subtasks || []).findIndex(s => s.id === sid);
+    if (idx < 0) throw new HttpError(404, 'Step not found.');
+    const next = sanitizeSubtask({ text: body.text, done: body.done }, it.subtasks[idx]);
+    // Only apply the fields that were sent.
+    const cur = it.subtasks[idx];
+    if (!('text' in body)) next.text = cur.text;
+    if (!('done' in body)) next.done = cur.done;
+    if (!next.text) throw new HttpError(400, 'Step text required.');
+    if (next.done !== cur.done) verb = next.done ? 'Tick step: ' : 'Untick step: ';
+    it.subtasks[idx] = next;
+    label = next.text;
+    title = it.title;
+    return it;
+  }, () => verb + label + ' (' + title + ')');
+  res.json(item);
+}));
+
+// Already gone (item or step) counts as done, so a retried delete doesn't fail.
+app.delete('/api/items/:id/subtasks/:sid', h(async (req, res) => {
+  const sid = stepId(req);
+  let label = '', title = '';
+  await req.store.mutateBoard(b => {
+    const it = b.items.find(i => i.id === req.params.id);
+    if (!it || !Array.isArray(it.subtasks)) return;
+    const step = it.subtasks.find(s => s.id === sid);
+    if (!step) return;
+    label = step.text;
+    title = it.title;
+    it.subtasks = it.subtasks.filter(s => s.id !== sid);
+    if (!it.subtasks.length) delete it.subtasks;
+  }, () => 'Remove step: ' + label + ' (' + title + ')');
+  res.json({ ok: true });
 }));
 
 // Already gone counts as done, so a retried delete doesn't fail.
