@@ -22,7 +22,7 @@ const express = require('express');
 require('./lib/env').loadEnv(path.join(__dirname, '.env'));
 
 const {
-  HttpError, SNIPPET_ID_RE, SUBTASK_ID_RE, MAX_SUBTASKS, sanitizeSubtask, normalizeBoard, cleanProjectColor, oneLine, sanitizeItem, sanitizeSnippet
+  HttpError, SNIPPET_ID_RE, ITEM_ID_RE, SUBTASK_ID_RE, MAX_SUBTASKS, sanitizeSubtask, normalizeBoard, cleanProjectColor, oneLine, sanitizeItem, sanitizeSnippet
 } = require('./lib/model');
 const { GitHubError, request, authorizeUrl, exchangeCode, refreshToken } = require('./lib/github');
 const { parseCookies, serializeCookie, createSealer } = require('./lib/session');
@@ -349,6 +349,126 @@ app.delete('/api/items/:id', h(async (req, res) => {
   await req.store.mutateBoard(b => {
     b.items = b.items.filter(i => i.id !== req.params.id);
   }, 'Delete item');
+  res.json({ ok: true });
+}));
+
+/* ---------- archive ---------- */
+
+// Moving items between board.json and archive.json is two writes. The archive
+// copy is always written first, so a failure in between leaves a duplicate that
+// a retry cleans up, never a lost item.
+
+function itemIds(req) {
+  const ids = req.body && req.body.ids;
+  if (!Array.isArray(ids) || !ids.length || ids.length > 1000 ||
+      !ids.every(i => typeof i === 'string' && ITEM_ID_RE.test(i))) {
+    throw new HttpError(400, 'Send between 1 and 1000 item ids.');
+  }
+  return Array.from(new Set(ids));
+}
+
+const moveMessage = (verb, items) =>
+  items.length === 1 ? verb + ' item: ' + items[0].title : verb + ' ' + items.length + ' items';
+
+async function archiveItems(store, items, message, closing) {
+  const now = new Date().toISOString();
+  await store.mutateArchive(a => {
+    items.forEach(it => {
+      if (!a.items.some(x => x.id === it.id)) a.items.push({ ...it, archivedAt: now });
+    });
+    if (closing) {
+      const rec = { name: closing.name, color: closing.color, closedAt: now };
+      const i = a.projects.findIndex(p => p.name === closing.name);
+      if (i < 0) a.projects.push(rec); else a.projects[i] = rec;
+    }
+  }, message);
+  const gone = new Set(items.map(i => i.id));
+  await store.mutateBoard(b => {
+    b.items = b.items.filter(i => !gone.has(i.id));
+    if (closing) {
+      b.projects = b.projects.filter(p => p !== closing.name);
+      delete b.projectColors[closing.name];
+    }
+  }, message);
+}
+
+// reopen: a project to put back on the board even when it has no items.
+async function restoreItems(store, archive, items, message, reopen) {
+  const colorOf = name => {
+    const rec = archive.projects.find(p => p.name === name);
+    return rec ? cleanProjectColor(rec.color) : '';
+  };
+  const board = await store.mutateBoard(b => {
+    items.forEach(src => {
+      if (b.items.some(i => i.id === src.id)) return;
+      const it = { ...src };
+      delete it.archivedAt;
+      b.items.push(it);
+    });
+    const names = items.map(i => i.project);
+    if (reopen) names.push(reopen);
+    names.forEach(name => {
+      if (!name || b.projects.includes(name)) return;
+      b.projects.push(name);
+      const c = colorOf(name);
+      if (c) b.projectColors[name] = c;
+    });
+    return b;
+  }, message);
+  const gone = new Set(items.map(i => i.id));
+  await store.mutateArchive(a => {
+    a.items = a.items.filter(i => !gone.has(i.id));
+    a.projects = a.projects.filter(p => !board.projects.includes(p.name));
+  }, message);
+}
+
+app.get('/api/archive', h(async (req, res) => {
+  res.json(await req.store.getArchive());
+}));
+
+app.post('/api/archive', h(async (req, res) => {
+  const want = new Set(itemIds(req));
+  const board = await req.store.getBoard();
+  const items = board.items.filter(i => want.has(i.id));
+  // Not on the board any more: a retry that finds them already moved.
+  if (items.length) await archiveItems(req.store, items, moveMessage('Archive', items));
+  res.json({ ok: true });
+}));
+
+app.post('/api/archive/restore', h(async (req, res) => {
+  const want = new Set(itemIds(req));
+  const archive = await req.store.getArchive();
+  const items = archive.items.filter(i => want.has(i.id));
+  if (items.length) await restoreItems(req.store, archive, items, moveMessage('Restore', items));
+  res.json({ ok: true });
+}));
+
+app.post('/api/projects/:name/close', h(async (req, res) => {
+  const name = req.params.name;
+  const board = await req.store.getBoard();
+  if (!board.projects.includes(name)) {
+    // Already closed (a retry): nothing to do.
+    const archive = await req.store.getArchive();
+    if (archive.projects.some(p => p.name === name)) return res.json({ ok: true });
+    throw new HttpError(404, 'That project no longer exists.');
+  }
+  const items = board.items.filter(i => i.project === name);
+  await archiveItems(req.store, items, 'Close project: ' + name, { name, color: board.projectColors[name] || '' });
+  res.json({ ok: true });
+}));
+
+app.post('/api/projects/:name/reopen', h(async (req, res) => {
+  const name = req.params.name;
+  const archive = await req.store.getArchive();
+  const closed = archive.projects.some(p => p.name === name);
+  const items = archive.items.filter(i => i.project === name);
+  if (!closed && !items.length) {
+    // Already reopened (a retry) or never closed.
+    const board = await req.store.getBoard();
+    if (board.projects.includes(name)) return res.json({ ok: true });
+    throw new HttpError(404, 'That project is not in the archive.');
+  }
+  await restoreItems(req.store, archive, items, 'Reopen project: ' + name, name);
   res.json({ ok: true });
 }));
 

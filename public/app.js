@@ -37,6 +37,7 @@
     back:  '<svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="15 18 9 12 15 6"/></svg>',
     copy:  '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>',
     steps: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="4"/><polyline points="8 12 11 15 16 9"/></svg>',
+    archive: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="5" rx="1.5"/><path d="M5 9v9a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V9M10 13h4"/></svg>',
     code:  '<svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>',
     active:  '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="3"/></svg>',
     doing:   '<svg viewBox="0 0 24 24" aria-hidden="true"><polygon points="7 4 19 12 7 20 7 4"/></svg>',
@@ -55,6 +56,11 @@
   var editingId = null;   // when set, the add-modal is in "edit" mode
   var detailId = null;    // item shown in the expanded-card modal
   var page = 'board';
+  // Archived items and closed projects: null until the Archive page is first opened.
+  var archive = null;
+  var archLoaded = false;
+  var archFilter = { q: '', project: 'all', group: 'all' };
+  var detailArchId = null; // archived item shown (read-only) in the popup
 
   var appEl = document.getElementById('app');
   var boardEl = document.getElementById('board');
@@ -126,6 +132,7 @@
   var flushing = false, retryT = null, retryDelay = 0, syncPaused = false;
   var failing = false;          // saves are currently failing (label shows it; toasts once)
   var snipsTouched = false;     // a snippet change was sent: reload the library after
+  var archTouched = false;      // an archive change was sent: reload the archive after
 
   function rid() { return Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 6); }
   function readQueue() {
@@ -134,17 +141,29 @@
   }
   function writeQueue() { try { localStorage.setItem(QKEY, JSON.stringify(queue)); } catch (_) {} }
   function isSnipOp(op) { return op.t.indexOf('snip.') === 0; }
+  function isArchOp(op) { return op.t.indexOf('arch.') === 0 || op.t === 'proj.close' || op.t === 'proj.reopen'; }
 
   // Apply a change to what's on screen. Used when the change is made, and
   // again after every reload for changes that haven't been saved yet.
-  function applyOp(op) {
+  function applyOp(op, scope) {
     var b = op.b || {};
     switch (op.t) {
       case 'item.add':
-        if (!itemById(b.id)) board.items.push(Object.assign({ status: 'open', createdAt: new Date().toISOString() }, b));
+        if (!itemById(b.id)) {
+          var added = Object.assign({ status: 'open', createdAt: new Date().toISOString() }, b);
+          if (added.status === 'done') added.doneAt = added.createdAt;
+          board.items.push(added);
+        }
         break;
       case 'item.patch':
-        var it = itemById(op.k); if (it) Object.assign(it, b);
+        var it = itemById(op.k);
+        if (it) {
+          var wasDone = it.status === 'done';
+          Object.assign(it, b);
+          // Same as the server: doneAt is set on the way into done, dropped on the way out.
+          if (b.status === 'done' && !wasDone) it.doneAt = new Date().toISOString();
+          else if (b.status && b.status !== 'done') delete it.doneAt;
+        }
         break;
       case 'item.del':
         board.items = board.items.filter(function (i) { return i.id !== op.k; });
@@ -185,6 +204,18 @@
         board.projects = board.projects.filter(function (p) { return p !== op.k; });
         if (board.projectColors) delete board.projectColors[op.k];
         break;
+      case 'arch.add':
+        moveToArchive(op.snap, b.ids, null, scope);
+        break;
+      case 'proj.close':
+        moveToArchive(op.snap, null, op.k, scope);
+        break;
+      case 'arch.restore':
+        moveToBoard(op.snap, b.ids, null, scope);
+        break;
+      case 'proj.reopen':
+        moveToBoard(op.snap, null, op.k, scope);
+        break;
       case 'snip.add':
         if (!snipById(b.id)) snippets.unshift(localSnippet(b, null));
         break;
@@ -198,8 +229,65 @@
         break;
     }
   }
+  // Archive changes carry a copy of the items they move (op.snap), so they can be
+  // shown on the Archive page even when it was loaded after the change was made.
+  // scope: 'board' or 'archive' to touch only that side (used when re-applying
+  // queued changes to a freshly loaded copy); otherwise both.
+  function clone(o) { return JSON.parse(JSON.stringify(o)); }
+  function archItemById(id) {
+    var list = archive ? archive.items : [];
+    for (var i = 0; i < list.length; i++) if (list[i].id === id) return list[i];
+    return null;
+  }
+  function moveToArchive(snap, ids, closing, scope) {
+    snap = snap || { items: [], colors: {} };
+    var gone = {};
+    (ids || []).forEach(function (id) { gone[id] = true; });
+    snap.items.forEach(function (it) { gone[it.id] = true; });
+    if (closing) board.items.forEach(function (it) { if (it.project === closing) gone[it.id] = true; });
+    if (scope !== 'archive') {
+      board.items = board.items.filter(function (it) { return !gone[it.id]; });
+      if (closing) {
+        board.projects = board.projects.filter(function (p) { return p !== closing; });
+        if (board.projectColors) delete board.projectColors[closing];
+      }
+    }
+    if (archive && scope !== 'board') {
+      snap.items.forEach(function (it) { if (!archItemById(it.id)) archive.items.push(clone(it)); });
+      if (closing && !archive.projects.some(function (p) { return p.name === closing; })) {
+        archive.projects.push({ name: closing, color: (snap.colors && snap.colors[closing]) || '', closedAt: new Date().toISOString() });
+      }
+    }
+  }
+  function moveToBoard(snap, ids, reopen, scope) {
+    snap = snap || { items: [], colors: {} };
+    var names = snap.items.map(function (it) { return it.project; });
+    if (reopen) names.push(reopen);
+    if (scope !== 'archive') {
+      snap.items.forEach(function (src) {
+        if (itemById(src.id)) return;
+        var it = clone(src); delete it.archivedAt;
+        board.items.push(it);
+      });
+      names.forEach(function (name) {
+        if (!name || board.projects.indexOf(name) >= 0) return;
+        board.projects.push(name);
+        var c = snap.colors && snap.colors[name];
+        if (c) { board.projectColors = Object.assign({}, board.projectColors); board.projectColors[name] = c; }
+      });
+    }
+    if (archive && scope !== 'board') {
+      var gone = {};
+      snap.items.forEach(function (it) { gone[it.id] = true; });
+      archive.items = archive.items.filter(function (it) { return !gone[it.id] && !(reopen && it.project === reopen); });
+      archive.projects = archive.projects.filter(function (p) { return names.indexOf(p.name) < 0; });
+    }
+  }
   function applyPending(kind) {
-    queue.forEach(function (op) { if ((kind === 'snip') === isSnipOp(op)) applyOp(op); });
+    queue.forEach(function (op) {
+      if (kind === 'arch') { if (isArchOp(op)) applyOp(op, 'archive'); }
+      else if ((kind === 'snip') === isSnipOp(op)) applyOp(op, kind === 'board' ? 'board' : undefined);
+    });
   }
 
   // Make a change: show it now, save it in the background.
@@ -207,7 +295,10 @@
     op.id = rid(); op.tries = 0;
     applyOp(op);
     if (isSnipOp(op)) renderSnippets();
-    else { render(); if (projBg.classList.contains('open')) renderProjList(); }
+    else {
+      render(); if (projBg.classList.contains('open')) renderProjList();
+      if (isArchOp(op) && archive) renderArchive();
+    }
     readQueue(); // pick up anything another tab queued
     queue.push(op); writeQueue();
     flush();
@@ -218,6 +309,8 @@
     if (op.t === 'item.patch' && /not found/i.test(err)) return what + ' was deleted somewhere else, so your change wasn’t saved.';
     if (op.t.indexOf('sub.') === 0 && /not found/i.test(err)) return what + ' wasn’t saved because its item or step was deleted somewhere else.';
     if (op.t === 'snip.patch' && /not found/i.test(err)) return what + ' was deleted somewhere else, so your change wasn’t saved.';
+    if (op.t === 'proj.close' && /no longer exists/i.test(err)) return 'Project ' + what + ' was removed somewhere else, so it wasn’t closed.';
+    if (op.t === 'proj.reopen' && /not in the archive/i.test(err)) return 'Project ' + what + ' is no longer in the archive, so it wasn’t reopened.';
     if (op.t === 'proj.color' && /no longer exists/i.test(err)) return 'Project ' + what + ' was removed somewhere else, so its colour wasn’t saved.';
     return 'Couldn’t save ' + what + ': ' + err;
   }
@@ -255,6 +348,7 @@
     if (!op) return Promise.resolve();
     return sendOp(op).then(function (dropped) {
       if (isSnipOp(op)) snipsTouched = true;
+      if (isArchOp(op)) archTouched = true;
       readQueue();
       queue = queue.filter(function (x) { return x.id !== op.id; });
       writeQueue();
@@ -293,6 +387,7 @@
       // Catch up with the saved version (and anything changed on another device).
       loadBoard();
       if (snipsTouched) { snipsTouched = false; loadSnippets(); }
+      if (archTouched) { archTouched = false; if (archive) loadArchive(); }
     }, function (e) {
       flushing = false;
       if (e.kind === 'auth') { syncPaused = true; setSync('pending'); boot(); return; }
@@ -353,6 +448,7 @@
       if (showingCopy) {
         showingCopy = false;
         loadSnippets(); // the library may be the saved copy too
+        if (archive) loadArchive();
         if (!queue.length) {
           if (failing) toast('Back online', true);
           failing = false; retryDelay = 0;
@@ -422,8 +518,8 @@
     for (var i = 0; i < PROJ_COLORS.length; i++) if (PROJ_COLORS[i].k === k) return PROJ_COLORS[i].name;
     return PROJ_COLORS[0].name;
   }
-  function projChip(p) {
-    var k = projColor(p);
+  function projChip(p, color) {
+    var k = color == null ? projColor(p) : color;
     return '<span class="chip proj"' + (k ? ' style="--pc:' + pcVar(k) + '"' : '') + '>' + esc(p) + '</span>';
   }
   // When the board is filtered to a project with a colour, that colour becomes
@@ -611,6 +707,8 @@
     var af = activeFiltersHTML(), afEl = document.getElementById('activeFilters');
     afEl.innerHTML = af; afEl.hidden = !af;
     var done = scoped.filter(function (i) { return i.status === 'done'; }).length;
+    archDoneBtn.hidden = !done;
+    document.getElementById('archDoneLab').innerHTML = '<span class="lab-long">Archive ' + done + ' done</span><span class="lab-short">Archive ' + done + '</span>';
     document.getElementById('doneN').textContent = done;
     document.getElementById('totN').textContent = scoped.length;
     document.getElementById('leftN').textContent = scoped.length - done;
@@ -674,13 +772,14 @@
     var allBoard = page === 'board' && filters.prio === 'all' && filters.project === 'all' && filters.group === 'all';
     setCurrent(document.getElementById('navBoard'), allBoard);
     setCurrent(document.getElementById('navSnips'), page === 'snippets');
+    setCurrent(document.getElementById('navArchive'), page === 'archive');
   }
   function setCurrent(el, on) { if (on) el.setAttribute('aria-current', 'page'); else el.removeAttribute('aria-current'); }
 
   document.getElementById('nav').addEventListener('click', function (e) {
     var b = e.target.closest('[data-nav]'); if (!b) return;
     var k = b.dataset.nav;
-    if (k === 'snippets') { showPage('snippets'); }
+    if (k === 'snippets' || k === 'archive') { showPage(k); }
     else {
       filters.prio = k === 'prio' ? b.dataset.v : 'all';
       filters.project = k === 'project' ? b.dataset.v : 'all';
@@ -875,7 +974,7 @@
       '<hr><p class="pop-label">Priority</p>' + PRIOS.map(function (p) {
         return '<button role="menuitemradio" data-p="' + p.k + '" aria-checked="' + (p.k === pr) + '"><span class="pd" style="--c:' + PCOLOR[p.k] + '"></span>' + p.name + '</button>';
       }).join('') +
-      '<hr><button role="menuitem" class="danger" data-a="del">Delete</button>';
+      '<hr><button role="menuitem" data-a="archive">Archive</button><button role="menuitem" class="danger" data-a="del">Delete</button>';
   }
 
   /* ---------- styled dropdowns (#14) ----------
@@ -917,7 +1016,7 @@
     });
     syncSelect(sel);
   }
-  var SELECT_IDS = ['mProj', 'mPrio', 'sLang'];
+  var SELECT_IDS = ['mProj', 'mPrio', 'sLang', 'archProj', 'archGrp'];
   SELECT_IDS.forEach(function (id) { enhanceSelect(document.getElementById(id)); });
   function syncSelects() { SELECT_IDS.forEach(function (id) { syncSelect(document.getElementById(id)); }); }
 
@@ -1017,12 +1116,17 @@
 
   /* ---------- confirm dialog (#16) ---------- */
   var confirmBg = document.getElementById('confirmBg');
+  var TRASH_ICON = confirmBg.querySelector('.c-ico').innerHTML;
   var confirmResolve = null, confirmReturnFocus = null;
   function confirmDialog(o) {
     if (confirmResolve) closeConfirm(false);
     document.getElementById('cTitle').textContent = o.title;
     document.getElementById('cMsg').textContent = o.message || '';
     document.getElementById('cOk').textContent = o.ok || 'Delete';
+    // Moving things to the Archive isn't destructive: no red button or bin icon.
+    document.getElementById('cOk').className = 'btn ' + (o.plain ? 'primary' : 'danger-solid');
+    confirmBg.querySelector('.c-ico').classList.toggle('plain', !!o.plain);
+    confirmBg.querySelector('.c-ico').innerHTML = o.plain ? ICON.archive : TRASH_ICON;
     confirmReturnFocus = document.activeElement;
     confirmBg.classList.add('open');
     document.getElementById('cOk').focus(); // immediately, so an Enter right away goes to Delete
@@ -1072,6 +1176,7 @@
           if (d.p) { if (d.p !== it.prio) patchItem(id, { prio: d.p }); }
           else if (d.a === 'open') openDetail(id);
           else if (d.a === 'edit') openEdit(id);
+          else if (d.a === 'archive') archiveOne(id);
           else if (d.a === 'del') confirmDelete(id);
         });
       }
@@ -1192,6 +1297,14 @@
   window.addEventListener('pointerup', detailPointerUp);
   window.addEventListener('pointercancel', detailPointerUp);
 
+  // "Created … · Done … · Archived …", whichever dates the item has.
+  function datesHTML(it) {
+    var parts = [['Created', it.createdAt], ['Done', it.doneAt], ['Archived', it.archivedAt]]
+      .filter(function (x) { return fmtDate(x[1]); })
+      .map(function (x) { return x[0] + ' ' + fmtDate(x[1]); });
+    return parts.length ? '<p class="d-dates">' + parts.join(' · ') + '</p>' : '';
+  }
+
   function renderDetail() {
     var it = itemById(detailId);
     if (!it) { closeDetail(); return; }
@@ -1223,10 +1336,10 @@
     h += '<div class="d-section"><p class="d-label">Description</p>' +
       (it.note ? '<p class="d-note">' + esc(it.note) + '</p>' : '<p class="d-note muted">No description yet. Click Edit to add one.</p>') + '</div>';
     h += checklistHTML(it);
-    var created = fmtDate(it.createdAt);
-    if (created) h += '<p class="d-dates">Created ' + created + '</p>';
+    h += datesHTML(it);
     h += '</div>';
-    h += '<div class="d-foot"><button class="btn sm danger" data-dact="del">Delete</button><span class="grow"></span>' +
+    h += '<div class="d-foot"><button class="btn sm danger" data-dact="del">Delete</button>' +
+      '<button class="btn sm" data-dact="archive">Archive</button><span class="grow"></span>' +
       '<button class="btn sm" data-dact="close">Close</button><button class="btn sm primary" data-dact="edit">Edit</button></div>';
     detailRendering = true;
     detailEl.innerHTML = h;
@@ -1262,11 +1375,19 @@
   function closeDetail() {
     if (!detailBg.classList.contains('open')) return;
     detailBg.classList.remove('open');
-    var id = detailId; detailId = null;
+    var id = detailId, aid = detailArchId; detailId = null; detailArchId = null;
     var card = id && boardEl.querySelector('.card[data-id="' + id + '"]'); if (card) card.focus({ preventScroll: true });
+    var row = aid && archListEl.querySelector('.arch-row[data-id="' + aid + '"] .arch-title'); if (row) row.focus({ preventScroll: true });
   }
   detailBg.addEventListener('click', function (e) {
     if (e.target === detailBg) return closeDetail();
+    if (detailArchId) {
+      var ab = e.target.closest('[data-dact]'); if (!ab) return;
+      var aid = detailArchId;
+      if (ab.dataset.dact === 'close') closeDetail();
+      else if (ab.dataset.dact === 'restore') { closeDetail(); restoreOne(aid); }
+      return;
+    }
     var s = e.target.closest('[data-ds]');
     if (s && detailId) { var it = itemById(detailId); if (it && it.status !== s.dataset.ds) patchItem(detailId, { status: s.dataset.ds }); return; }
     var rm = e.target.closest('.sub-rm'), tx = e.target.closest('.sub-text');
@@ -1282,6 +1403,7 @@
     if (a.dataset.dact === 'close') closeDetail();
     else if (a.dataset.dact === 'edit') { closeDetail(); openEdit(id); }
     else if (a.dataset.dact === 'del') confirmDelete(id);
+    else if (a.dataset.dact === 'archive') { closeDetail(); archiveOne(id); }
   });
   detailBg.addEventListener('change', function (e) {
     var cb = e.target.closest('.sub-cb'); if (!cb || !detailId) return;
@@ -1404,6 +1526,7 @@
              'aria-label="Colour for ' + esc(p) + ': ' + colorName(k) + '" title="Colour: ' + colorName(k) + '">' +
              '<span class="sw" style="--c:' + pcVar(k) + '"></span></button>' +
              '<span class="pn">' + esc(p) + '</span><span class="pcount">' + n + ' item' + (n === 1 ? '' : 's') + '</span>' +
+             '<button class="pcl" data-p="' + esc(p) + '" title="Move this project and its items to the Archive">Close</button>' +
              '<button class="prm" data-p="' + esc(p) + '">Remove</button></li>';
     }).join('');
   }
@@ -1473,6 +1596,26 @@
       if (!ok) return;
       if (filters.project === name) filters.project = 'all';
       change({ t: 'proj.del', m: 'DELETE', u: '/api/projects/' + encodeURIComponent(name), k: name, label: name });
+    });
+  });
+
+  document.getElementById('plist').addEventListener('click', function (e) {
+    var b = e.target.closest('.pcl'); if (!b) return;
+    var name = b.dataset.p;
+    var items = board.items.filter(function (i) { return i.project === name; });
+    var n = items.length, m = items.filter(notDone).length;
+    var tail = 'The project leaves the board and is kept in the Archive, where you can reopen it.';
+    var msg = tail;
+    if (n) {
+      msg = (n === 1 ? 'The item moves' : 'All ' + n + ' items move') + ' to the Archive' +
+        (m ? ' (' + (n === 1 ? 'it isn’t' : m === 1 ? '1 isn’t' : m + ' aren’t') + ' done yet)' : '') + '. ' + tail;
+    }
+    confirmDialog({ title: 'Close ' + name + '?', message: msg, ok: 'Close project', plain: true }).then(function (ok) {
+      if (!ok) return;
+      if (filters.project === name) filters.project = 'all';
+      var now = new Date().toISOString();
+      change({ t: 'proj.close', m: 'POST', u: '/api/projects/' + encodeURIComponent(name) + '/close', k: name, label: name,
+        snap: { items: items.map(function (i) { var c = clone(i); c.archivedAt = now; return c; }), colors: oneColor(name, board.projectColors) } });
     });
   });
 
@@ -1808,6 +1951,236 @@
     closeSnip();
   });
 
+  /* ==========================================================
+   * Archive
+   * ========================================================== */
+  var archListEl = document.getElementById('archList');
+  var archBannerEl = document.getElementById('archBanner');
+  var archSearch = document.getElementById('archSearch');
+  var archProjSel = document.getElementById('archProj');
+  var archGrpSel = document.getElementById('archGrp');
+  var archDoneBtn = document.getElementById('archDone');
+
+  function loadArchive() {
+    archLoaded = true; // set up front so concurrent callers don't double-fetch
+    return api('GET', '/api/archive').then(function (a) {
+      writeCache('archive', a);
+      archive = { items: a.items || [], projects: a.projects || [] };
+      applyPending('arch'); // changes not saved yet stay on screen
+      renderArchive();
+    }).catch(function (e) {
+      archLoaded = false; // try again next time the page is opened
+      if (e.offline) {
+        goOffline();
+        if (archive) return; // keep what's on screen
+        var copy = readCache('archive');
+        if (copy) { archive = { items: copy.items || [], projects: copy.projects || [] }; applyPending('arch'); renderArchive(); return; }
+      }
+      archListEl.innerHTML = '<p class="empty">Could not load the archive.<br><br>' + esc(e.message) + '</p>';
+    });
+  }
+
+  function oneColor(name, map) { var o = {}; if (map && map[name]) o[name] = map[name]; return o; }
+  function closedRec(name) {
+    var list = archive ? archive.projects : [];
+    for (var i = 0; i < list.length; i++) if (list[i].name === name) return list[i];
+    return null;
+  }
+  function shortTitle(t) { return t.length > 40 ? t.slice(0, 39) + '…' : t; }
+
+  // Move items off the board (any status). Undo sends them back.
+  function archiveItemsNow(items) {
+    var now = new Date().toISOString();
+    var copies = items.map(function (i) { var c = clone(i); c.archivedAt = now; return c; });
+    for (var n = 0; n < copies.length; n += 1000) { // the server takes up to 1000 at a time
+      var part = copies.slice(n, n + 1000);
+      change({ t: 'arch.add', m: 'POST', u: '/api/archive', b: { ids: part.map(function (i) { return i.id; }) }, k: part[0].id,
+        label: part.length === 1 ? part[0].title : part.length + ' items', snap: { items: part, colors: {} } });
+    }
+    return copies;
+  }
+  function archiveOne(id) {
+    var it = itemById(id); if (!it) return;
+    var copy = archiveItemsNow([it])[0];
+    toast('“' + shortTitle(copy.title) + '” archived', false, function () {
+      sendRestore([copy]);
+      toast('Restored to the board', true);
+    });
+  }
+  function sendRestore(items) {
+    var colors = {};
+    if (archive) archive.projects.forEach(function (p) { if (p.color) colors[p.name] = p.color; });
+    change({ t: 'arch.restore', m: 'POST', u: '/api/archive/restore', b: { ids: items.map(function (i) { return i.id; }) }, k: items[0].id,
+      label: items.length === 1 ? items[0].title : items.length + ' items', snap: { items: items.map(clone), colors: colors } });
+  }
+  function restoreOne(id) {
+    var it = archItemById(id); if (!it) return;
+    var title = it.title;
+    sendRestore([it]);
+    toast('“' + shortTitle(title) + '” restored to the board', true);
+  }
+
+  archDoneBtn.addEventListener('click', function () {
+    var items = board.items.filter(function (i) { return i.status === 'done' && inScope(i); });
+    var n = items.length; if (!n) return;
+    var parts = [];
+    if (filters.prio !== 'all') parts.push(PLAB[filters.prio] + ' priority');
+    if (filters.project !== 'all') parts.push(filters.project);
+    if (filters.group !== 'all') parts.push(filters.group);
+    if (filters.q.trim()) parts.push('“' + filters.q.trim() + '”');
+    var msg = (parts.length ? 'Done items in ' + parts.join(' · ') : 'All done items') + ' will move to the Archive, where you can restore them.';
+    confirmDialog({ title: 'Archive ' + n + ' done item' + (n === 1 ? '' : 's') + '?', message: msg, ok: 'Archive', plain: true }).then(function (ok) {
+      if (!ok) return;
+      archiveItemsNow(items);
+      toast(n + ' item' + (n === 1 ? '' : 's') + ' archived', true);
+    });
+  });
+
+  function archProjName(it) { return it.project || '(no project)'; }
+  function archProjChip(name) {
+    var k = projColor(name), rec = closedRec(name);
+    if (!k && rec && PROJ_COLORS.some(function (c) { return c.k && c.k === rec.color; })) k = rec.color;
+    return projChip(name, k);
+  }
+  function archMatches(it) {
+    if (archFilter.project !== 'all' && archProjName(it) !== archFilter.project) return false;
+    if (archFilter.group !== 'all' && !groupsOf(it).some(function (g) { return sameText(g, archFilter.group); })) return false;
+    var q = archFilter.q.trim().toLowerCase();
+    if (!q) return true;
+    var hay = [it.title, it.note, it.group, it.project].concat((it.subtasks || []).map(function (x) { return x.text; })).join('\n').toLowerCase();
+    return q.split(/\s+/).every(function (t) { return hay.indexOf(t) >= 0; });
+  }
+  function setOptions(sel, opts, value) {
+    sel.innerHTML = opts.map(function (o) { return '<option value="' + esc(o.v) + '">' + esc(o.t) + '</option>'; }).join('');
+    sel.value = value; syncSelect(sel);
+  }
+
+  function renderArchive() {
+    if (!archive) { archListEl.innerHTML = '<p class="empty">Loading…</p>'; return; }
+    var items = archive.items;
+
+    var names = [];
+    items.forEach(function (it) { var n = archProjName(it); if (names.indexOf(n) < 0) names.push(n); });
+    archive.projects.forEach(function (p) { if (names.indexOf(p.name) < 0) names.push(p.name); });
+    names.sort(function (a, b) { return a.localeCompare(b); });
+    if (archFilter.project !== 'all' && names.indexOf(archFilter.project) < 0) archFilter.project = 'all';
+    setOptions(archProjSel, [{ v: 'all', t: 'All projects' }].concat(names.map(function (n) {
+      var r = closedRec(n), d = r && fmtDate(r.closedAt);
+      return { v: n, t: r ? n + ' · closed' + (d ? ' ' + d : '') : n };
+    })), archFilter.project);
+
+    var groups = [];
+    items.forEach(function (it) {
+      if (archFilter.project !== 'all' && archProjName(it) !== archFilter.project) return;
+      groupsOf(it).forEach(function (g) { if (!groups.some(function (x) { return sameText(x, g); })) groups.push(g); });
+    });
+    groups.sort(function (a, b) { return a.localeCompare(b); });
+    if (archFilter.group !== 'all' && !groups.some(function (g) { return sameText(g, archFilter.group); })) archFilter.group = 'all';
+    setOptions(archGrpSel, [{ v: 'all', t: 'All groups' }].concat(groups.map(function (g) { return { v: g, t: g }; })), archFilter.group);
+
+    var rec = archFilter.project !== 'all' ? closedRec(archFilter.project) : null;
+    if (rec) {
+      var cn = items.filter(function (it) { return archProjName(it) === rec.name; }).length, cd = fmtDate(rec.closedAt);
+      archBannerEl.innerHTML = '<div class="arch-banner"><p><b>' + esc(rec.name) + '</b> was closed' + (cd ? ' on ' + cd : '') + ' · ' + cn + ' item' + (cn === 1 ? '' : 's') +
+        '</p><button type="button" class="btn sm primary" data-act="reopen">Reopen project</button></div>';
+    } else {
+      archBannerEl.innerHTML = '';
+    }
+
+    var vis = items.filter(archMatches).sort(function (a, b) { return String(b.archivedAt || '').localeCompare(String(a.archivedAt || '')); });
+    if (!items.length) {
+      archListEl.innerHTML = '<p class="empty">Nothing archived yet. Done items you archive will show here.</p>';
+    } else if (!vis.length) {
+      archListEl.innerHTML = '<p class="empty">No matches</p>';
+    } else {
+      archListEl.innerHTML = '<ul class="arch-items">' + vis.map(archRowHTML).join('') + '</ul>';
+    }
+    if (detailArchId) renderArchiveDetail();
+  }
+
+  function archRowHTML(it) {
+    var st = it.status || 'open';
+    var h = '<li class="arch-row" data-id="' + esc(it.id) + '"><div class="arch-main">';
+    h += '<button type="button" class="arch-title" data-act="open">' + esc(it.title) + '</button>';
+    h += '<div class="meta"><span class="pill static ' + st + '">' + SLAB[st] + '</span>';
+    if (it.project) h += archProjChip(it.project);
+    groupsOf(it).forEach(function (g) { h += '<span class="chip">' + esc(g) + '</span>'; });
+    var steps = it.subtasks || [];
+    if (steps.length) {
+      var sd = stepsDone(it), label = sd + ' of ' + steps.length + ' steps done';
+      h += '<span class="steps' + (sd === steps.length ? ' all' : '') + '" title="' + label + '" aria-label="' + label + '">' + ICON.steps + sd + '/' + steps.length + '</span>';
+    }
+    h += '</div>';
+    var dates = [];
+    if (fmtDate(it.doneAt)) dates.push('Done ' + fmtDate(it.doneAt));
+    if (fmtDate(it.archivedAt)) dates.push('Archived ' + fmtDate(it.archivedAt));
+    if (dates.length) h += '<p class="arch-dates">' + dates.join(' · ') + '</p>';
+    h += '</div><button type="button" class="btn sm" data-act="restore" aria-label="Restore: ' + esc(it.title) + '">Restore</button></li>';
+    return h;
+  }
+
+  archListEl.addEventListener('click', function (e) {
+    var row = e.target.closest('.arch-row'); if (!row) return;
+    var btn = e.target.closest('[data-act]');
+    if (btn && btn.dataset.act === 'restore') restoreOne(row.dataset.id);
+    else openArchiveDetail(row.dataset.id);
+  });
+  archBannerEl.addEventListener('click', function (e) {
+    if (!e.target.closest('[data-act="reopen"]')) return;
+    var name = archFilter.project, rec = closedRec(name); if (!rec) return;
+    var items = archive.items.filter(function (it) { return archProjName(it) === name; });
+    var n = items.length, colors = {};
+    if (rec.color) colors[name] = rec.color;
+    confirmDialog({ title: 'Reopen ' + name + '?', message: 'The project and its ' + n + ' item' + (n === 1 ? '' : 's') + ' go back on the board.', ok: 'Reopen', plain: true }).then(function (ok) {
+      if (!ok) return;
+      archFilter.project = 'all'; archFilter.group = 'all';
+      change({ t: 'proj.reopen', m: 'POST', u: '/api/projects/' + encodeURIComponent(name) + '/reopen', k: name, label: name,
+        snap: { items: items.map(clone), colors: colors } });
+      toast(name + ' reopened', true);
+    });
+  });
+  archSearch.addEventListener('input', function () { archFilter.q = archSearch.value; renderArchive(); });
+  archSearch.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape' && archSearch.value) { e.stopPropagation(); archSearch.value = ''; archFilter.q = ''; renderArchive(); }
+  });
+  archProjSel.addEventListener('change', function () { archFilter.project = archProjSel.value; renderArchive(); });
+  archGrpSel.addEventListener('change', function () { archFilter.group = archGrpSel.value; renderArchive(); });
+
+  // Read-only look at an archived item, in the same popup as board items.
+  function openArchiveDetail(id) {
+    detailId = null; detailArchId = id;
+    renderArchiveDetail();
+    detailBg.classList.add('open');
+    setTimeout(function () { var b = detailEl.querySelector('[data-dact="close"]'); if (b) b.focus(); }, 30);
+  }
+  function renderArchiveDetail() {
+    var it = archItemById(detailArchId);
+    if (!it) { closeDetail(); return; }
+    var st = it.status || 'open', pr = it.prio || 'medium', steps = it.subtasks || [], sd = stepsDone(it);
+    detailEl.className = 'modal detail ' + pr;
+    var h = '<div class="d-top"><div class="d-crumbs"><span class="d-prio">' + PLAB[pr] + '</span>';
+    if (it.project) h += archProjChip(it.project);
+    groupsOf(it).forEach(function (g) { h += '<span class="chip">' + esc(g) + '</span>'; });
+    h += '</div><h2 id="dTitle">' + esc(it.title) + '</h2></div><div class="d-body">';
+    h += '<div class="d-section"><p class="d-label">Status</p><span class="pill static ' + st + '">' + SLAB[st] + '</span></div>';
+    h += '<div class="d-section"><p class="d-label">Description</p>' +
+      (it.note ? '<p class="d-note">' + esc(it.note) + '</p>' : '<p class="d-note muted">No description.</p>') + '</div>';
+    if (steps.length) {
+      h += '<div class="d-section"><div class="d-labelrow"><p class="d-label">Checklist</p><span class="sub-count">' + sd + ' of ' + steps.length + '</span></div>' +
+        '<ul class="sub-list">' + steps.map(function (x) {
+          return '<li class="sub' + (x.done ? ' done' : '') + '"><input type="checkbox" class="sub-cb" disabled' + (x.done ? ' checked' : '') +
+            ' aria-label="' + (x.done ? 'Done' : 'Not done') + ': ' + esc(x.text) + '"><span class="sub-ro">' + esc(x.text) + '</span></li>';
+        }).join('') + '</ul></div>';
+    }
+    h += datesHTML(it) + '</div>';
+    h += '<div class="d-foot"><span class="grow"></span><button class="btn sm" data-dact="close">Close</button>' +
+      '<button class="btn sm primary" data-dact="restore">Restore</button></div>';
+    var prev = detailEl.querySelector('.d-body');
+    var scroll = prev ? prev.scrollTop : 0;
+    detailEl.innerHTML = h;
+    var body = detailEl.querySelector('.d-body'); if (body && scroll) body.scrollTop = scroll;
+  }
+
   /* ---------- global keys ---------- */
   document.addEventListener('keydown', function (e) {
     if (e.key === 'Escape') {
@@ -1830,7 +2203,7 @@
       return;
     }
     if (typing || e.ctrlKey || e.metaKey || e.altKey || document.querySelector('.modal-bg.open') || appEl.classList.contains('gated')) return;
-    if (e.key === '/') { e.preventDefault(); (page === 'snippets' ? searchEl : boardSearch).focus(); }
+    if (e.key === '/') { e.preventDefault(); (page === 'snippets' ? searchEl : page === 'archive' ? archSearch : boardSearch).focus(); }
     else if ((e.key === 'n' || e.key === 'N') && page === 'board') { e.preventDefault(); openAdd(); }
   });
 
@@ -1840,15 +2213,17 @@
   var gateEl = document.getElementById('gate');
 
   function showPage(name) {
-    page = name === 'snippets' ? 'snippets' : 'board';
+    page = name === 'snippets' || name === 'archive' ? name : 'board';
     appEl.dataset.page = page;
     document.body.dataset.page = page;
     applyAccent(); // project colour only applies on the board
     document.getElementById('boardView').hidden = page !== 'board';
     document.getElementById('snippetsView').hidden = page !== 'snippets';
-    document.getElementById('topTitle').textContent = page === 'snippets' ? 'Snippets' : 'Board';
-    try { history.replaceState(null, '', page === 'snippets' ? '#snippets' : location.pathname); } catch (_) {}
+    document.getElementById('archiveView').hidden = page !== 'archive';
+    document.getElementById('topTitle').textContent = { snippets: 'Snippets', archive: 'Archive', board: 'Board' }[page];
+    try { history.replaceState(null, '', page === 'board' ? location.pathname : '#' + page); } catch (_) {}
     if (page === 'snippets' && !snipsLoaded) loadSnippets();
+    if (page === 'archive') { if (!archLoaded) loadArchive(); else renderArchive(); }
     closePop();
     renderNav();
   }
@@ -1859,6 +2234,7 @@
     if (on) {
       document.getElementById('boardView').hidden = true;
       document.getElementById('snippetsView').hidden = true;
+      document.getElementById('archiveView').hidden = true;
     }
   }
 
@@ -1933,7 +2309,8 @@
       document.getElementById('whoName').textContent = 'Local mode';
     }
     snipsLoaded = false;
-    showPage(location.hash === '#snippets' ? 'snippets' : 'board');
+    archLoaded = false; archive = null;
+    showPage(location.hash === '#snippets' ? 'snippets' : location.hash === '#archive' ? 'archive' : 'board');
     loadBoard();
     if (!snipsLoaded) loadSnippets(); // for the sidebar count
     flush(); // send anything left over from last time (or from before signing in again)
