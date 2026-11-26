@@ -1,0 +1,8 @@
+{"projects":["Milltrans","Alpha","Beta"],"projectColors":{"Milltrans":"teal"},"items":[
+{"id":"i-st-d1","title":"Done A","project":"Milltrans","status":"done","prio":"medium","group":"Development","note":""},
+{"id":"i-st-d2","title":"Done B","project":"Milltrans","status":"done","prio":"high","group":"Docs","note":""},
+{"id":"i-st-o1","title":"Open C","project":"Milltrans","status":"doing","prio":"medium","group":"Main","note":""},
+{"id":"i-st-o2","title":"Open D","project":"Milltrans","status":"open","prio":"low","group":"training, Billing","note":""},
+{"id":"i-st-a1","title":"Alpha open","project":"Alpha","status":"open","prio":"medium","group":"","note":""},
+{"id":"i-st-ad","title":"Alpha done","project":"Alpha","status":"done","prio":"medium","group":"","note":""},
+{"id":"i-st-l1","title":"Loose","project":"","status":"open","prio":"medium","group":"","note":""}]}

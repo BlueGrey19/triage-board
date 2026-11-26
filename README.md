@@ -291,16 +291,41 @@ triage-board/
 │   ├── session.js         encrypted cookie sessions
 │   └── env.js             tiny .env loader
 ├── public/                the UI (index.html, styles.css, app.js)
+├── test/
+│   ├── unit/              fast Node tests (npm test)
+│   ├── e2e/               browser tests (npm run test:e2e)
+│   └── helpers/           in-memory fake of GitHub for the tests
 ├── data/
 │   ├── seed.json          starter projects for a brand-new board
 │   ├── board.json         local-mode board (git-ignored)
 │   ├── archive.json       local-mode archive (git-ignored)
 │   └── snippets/          local-mode snippets (git-ignored)
 ├── .env.example           copy to .env for GitHub mode
+├── playwright.config.js   browser test settings
 ├── .vscode/launch.json    press F5 to run
 ├── LICENSE
 └── README.md
 ```
+
+## Testing
+
+```
+npm test             # fast Node tests (a few seconds, no extra setup)
+npm run test:e2e     # browser tests (a few minutes)
+npm run test:all     # both
+```
+
+- `npm test` covers the data rules (validation, stages, snippet files), local storage,
+  the GitHub client's retries, and the API routes' commits against an in-memory fake
+  of GitHub.
+- `npm run test:e2e` drives the real app in a browser with Playwright: saving and
+  retrying, offline, undo, steps, archive, project stages, quick add and snippet links.
+  It uses Microsoft Edge on Windows. Elsewhere, run `npx playwright install chromium`
+  once and set `PW_CHANNEL=chromium`.
+- The tests use temporary data folders and a fake GitHub. They never touch `data/`,
+  `.env` or the real GitHub.
+- A failing browser run leaves a report with a screenshot and trace:
+  `npx playwright show-report`.
 
 ## Troubleshooting
 

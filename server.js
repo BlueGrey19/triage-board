@@ -19,7 +19,8 @@ const crypto = require('crypto');
 const fs = require('fs');
 const express = require('express');
 
-require('./lib/env').loadEnv(path.join(__dirname, '.env'));
+// TRIAGE_NO_DOTENV=1 skips .env (the automated tests set it).
+if (process.env.TRIAGE_NO_DOTENV !== '1') require('./lib/env').loadEnv(path.join(__dirname, '.env'));
 
 const {
   HttpError, SNIPPET_ID_RE, ITEM_ID_RE, SUBTASK_ID_RE, MAX_SUBTASKS, MAX_SNIPPET_LINKS, sanitizeSubtask, normalizeBoard, cleanProjectColor, STAGES, STAGE_KEYS, projectStage, effectiveStage, oneLine, sanitizeItem, sanitizeSnippet
@@ -198,6 +199,7 @@ app.get('/api/session', h(async (req, res) => {
 
 // Attach the right storage backend for this request.
 const withStore = h(async (req, res, next) => {
+  if (app.locals.storeOverride) { req.store = app.locals.storeOverride; return next(); } // tests only
   if (MODE === 'local') { req.store = localStore; return next(); }
   const s = await getSession(req, res);
   if (!s) throw new HttpError(401, 'Sign in with GitHub to continue.', 'auth');
@@ -662,18 +664,23 @@ app.use((err, req, res, next) => { // eslint-disable-line no-unused-vars
 
 /* ---------- boot ---------- */
 
-app.listen(PORT, () => {
-  console.log('');
-  console.log('  Triage Board is running.');
-  console.log('  Open     ->  ' + BASE_URL);
-  if (MODE === 'local') {
-    console.log('  Storage  ->  local files in ' + DATA_DIR);
-    console.log('               (set GITHUB_CLIENT_ID / GITHUB_CLIENT_SECRET to store in GitHub instead)');
-  } else {
-    console.log('  Storage  ->  GitHub: each user\'s private "' + DATA_REPO + '" repo');
-    console.log('  Callback ->  ' + REDIRECT_URI + '   (must match your GitHub App settings)');
-  }
-  console.log('');
-  console.log('  Press Ctrl+C here to stop the server.');
-  console.log('');
-});
+// Only listen when run directly, so tests can require the app.
+if (require.main === module) {
+  app.listen(PORT, () => {
+    console.log('');
+    console.log('  Triage Board is running.');
+    console.log('  Open     ->  ' + BASE_URL);
+    if (MODE === 'local') {
+      console.log('  Storage  ->  local files in ' + DATA_DIR);
+      console.log('               (set GITHUB_CLIENT_ID / GITHUB_CLIENT_SECRET to store in GitHub instead)');
+    } else {
+      console.log('  Storage  ->  GitHub: each user\'s private "' + DATA_REPO + '" repo');
+      console.log('  Callback ->  ' + REDIRECT_URI + '   (must match your GitHub App settings)');
+    }
+    console.log('');
+    console.log('  Press Ctrl+C here to stop the server.');
+    console.log('');
+  });
+}
+
+module.exports = app;

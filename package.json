@@ -6,7 +6,10 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "dev": "node server.js"
+    "dev": "node server.js",
+    "test": "node --test test/unit/github.test.js test/unit/model.test.js test/unit/routes.test.js test/unit/store-github.test.js test/unit/store-local.test.js",
+    "test:e2e": "playwright test",
+    "test:all": "npm test && npm run test:e2e"
   },
   "keywords": [
     "todo",
@@ -24,5 +27,8 @@
   },
   "engines": {
     "node": ">=18"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.49.1"
   }
 }
