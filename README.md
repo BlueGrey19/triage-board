@@ -4,7 +4,8 @@ A **to-do triage board** with a built-in **code snippet library**, in light and 
 
 - **Board:** items sit in four priority columns (**Critical / High / Medium / Low**),
   each tagged with its project and groups. Filter by project, group, status or search
-  to see one client's pile at a glance, even when you're juggling several.
+  to see one client's pile at a glance, even when you're juggling several. Break items
+  into checklists, move projects through delivery stages, and archive finished work.
 - **Snippets:** your reusable code (Deluge, JS, SQL, and others) in a two-pane library
   with search, tags, syntax highlighting and one-click copy, so you stop rewriting the
   same thing for every client.
@@ -15,7 +16,8 @@ It runs in one of two modes:
 |---|---|---|
 | Login | none | "Sign in with GitHub" |
 | Where data lives | `data/` folder on your machine | a private repo in *your* GitHub account |
-| History / undo | no | every change is a git commit |
+| Undo last change | yes | yes |
+| Full history | no | every change is a git commit |
 | Multi-device / phone | no | yes, if you host it |
 | Multi-user | no | yes, each person gets their own repo |
 | Setup | `npm start` | create a GitHub App (about 5 minutes) |
@@ -31,7 +33,14 @@ It runs in one of two modes:
 - **Slim cards.** Click a card to open it and see its description, change its status,
   edit or delete it. Cards with a description show a small ≡ icon after the title.
 - **Status per item:** Open, Doing, Testing, Blocked, Done. Click the status pill on a
-  card to change it. Done items fold away under "✓ N done" in each column.
+  card to change it. Done items fold away under "✓ N done" in each column, and the item
+  remembers the date it was marked done.
+- **Checklists:** break an item into steps from its popup. Type a step and press Enter
+  to add it, tick it off, click its text to edit it, or remove it with ×. Cards show
+  progress as `☑ 2/5`, and search finds step text too. Status stays manual.
+- **Undo:** after changing an item's status, priority, project or stage, or saving an
+  edit, a message offers **Undo** for a few seconds (or press `Ctrl+Z`). Deletes still
+  ask first instead.
 - **Cards or Compact view.** Compact shows one line per item. Your choice is remembered.
 - **Sidebar filters** for priority, project and group, plus a **group filter** and
   **search** on the board itself. They combine (e.g. Project: Milltrans + Group: Books),
@@ -44,6 +53,37 @@ It runs in one of two modes:
   colour** from a preset palette: its view takes on that colour, and its chip shows in
   that colour on every card.
 
+### Project stages
+
+Every project moves through the same delivery stages:
+
+| Stage | Suggested groups |
+|---|---|
+| Implementation | Development, Configuration |
+| Go Live | Training, Customer Testing, Defect Resolution |
+| Acceptance | Final Review, Project Closure |
+| Hypercare | User Onboarding, Support Takeover |
+
+- Filter the board to a project to see its **stage track** and a **Move to <next stage>**
+  button. The sidebar shows each project's current stage.
+- **Moving forward** archives the project's done items from earlier stages. Unfinished
+  items stay on the board with a small chip showing the stage they came from.
+- **Stepping back:** click an earlier stage on the track. Nothing is archived.
+- New items take the project's current stage; change an item's stage in its edit popup.
+  The Group field suggests the stage's activities first.
+- On Hypercare the button becomes **Close project**.
+
+### Archive
+
+- **Archive done** (next to the search box) archives the done items the current filters
+  show, e.g. everything done in Project: Milltrans + Group: Development.
+- **Archive one item** from its `⋯` menu or popup, with Undo.
+- **Close project** (from the stage track on Hypercare, or **Manage** in the sidebar)
+  moves all of a project's items to the archive and takes the project off the board.
+- The **Archive** page lists archived items with search and project, group and stage
+  filters. **Restore** puts an item back exactly as it was; **Reopen project** brings
+  back a closed project with all its items.
+
 ### Snippets
 
 - **Two-pane library:** a searchable list on the left; the selected snippet on the right
@@ -55,7 +95,13 @@ It runs in one of two modes:
 
 - **Light, dark or auto theme** (follows your system), switchable in the sidebar.
 - **Works on phones:** the sidebar becomes a slide-out menu.
-- **Saves automatically.** Every change is written the moment you make it.
+- **Saves in the background.** Every change shows immediately and is saved behind the
+  scenes. The label next to the page title shows the state: *Synced to GitHub* /
+  *Saved locally*, *Saving…*, or *Not synced · N changes · retrying*.
+- **Keeps working when the connection drops.** Unsaved changes are kept in the browser
+  (they survive a refresh) and retried until they save, one GitHub commit each. Click
+  the label to retry straight away. If the app is opened while GitHub can't be reached,
+  it shows your last saved copy of the board, snippets and archive.
 
 ### Keyboard shortcuts
 
@@ -63,6 +109,7 @@ It runs in one of two modes:
 |---|---|
 | `/` | Jump to search (board or snippets) |
 | `N` | Add a new board item |
+| `Ctrl+Z` | Undo the last change while its message is showing (not while typing) |
 | `Esc` | Close the open menu or window, or clear the search box |
 | `↑` `↓` `Enter` | Move through and pick from menus, dropdowns and suggestions |
 
@@ -79,8 +126,9 @@ npm install
 npm start
 ```
 
-Open http://localhost:4317. Your board saves to `data/board.json` and snippets to
-`data/snippets/*.md`. Both are git-ignored, so pushing this repo never uploads your data.
+Open http://localhost:4317. Your board saves to `data/board.json`, archived items to
+`data/archive.json` and snippets to `data/snippets/*.md`. All are git-ignored, so
+pushing this repo never uploads your data.
 
 In VS Code you can also press **F5**. The included launch config starts the server.
 
@@ -100,7 +148,8 @@ In VS Code you can also press **F5**. The included launch config starts the serv
 
   ```
   <your-username>/triage-data
-  ├── board.json              projects, project colours + triage items
+  ├── board.json              projects (colours, stages) + triage items and checklists
+  ├── archive.json            archived items and closed projects (made on first archive)
   └── snippets/
       ├── books-create-invoice-a1b2.md
       └── ...                 one readable markdown file per snippet
@@ -109,8 +158,10 @@ In VS Code you can also press **F5**. The included launch config starts the serv
   A snippet file starts with a short header (title, language, optional `type` for
   "Used in", tags, dates), followed by the description and the code block.
 
-  Each change is a commit (`Add item: …`, `Update snippet: …`), so you can view
-  history, diff and roll back on github.com. You can also hand-edit snippet files
+  Each change is a commit (`Add item: …`, `Tick step: …`, `Move Milltrans to Go Live`),
+  so you can view history, diff and roll back on github.com. Archiving writes
+  `archive.json` first and then `board.json` (two commits), so an interrupted move can
+  never lose an item. You can also hand-edit snippet files
   there; the app picks them up.
 
 ### 1. Create the GitHub App
@@ -209,7 +260,7 @@ own data, and you never see theirs.
 triage-board/
 ├── server.js              Express server: auth, API, picks storage backend
 ├── lib/
-│   ├── model.js           item / snippet validation + snippet file format
+│   ├── model.js           item / snippet / archive validation, stages, snippet file format
 │   ├── store-local.js     local-mode storage (data/ folder)
 │   ├── store-github.js    GitHub-mode storage (Contents + GraphQL APIs)
 │   ├── github.js          GitHub login + API client (built-in fetch, no SDK)
@@ -219,6 +270,7 @@ triage-board/
 ├── data/
 │   ├── seed.json          starter projects for a brand-new board
 │   ├── board.json         local-mode board (git-ignored)
+│   ├── archive.json       local-mode archive (git-ignored)
 │   └── snippets/          local-mode snippets (git-ignored)
 ├── .env.example           copy to .env for GitHub mode
 ├── .vscode/launch.json    press F5 to run
@@ -228,8 +280,10 @@ triage-board/
 
 ## Troubleshooting
 
-- **"Could not reach the server"**: the `npm start` terminal was closed or crashed.
-  Start it again.
+- **Label says "Can't reach the server · retrying"**: the `npm start` terminal was
+  closed or crashed. Start it again; waiting changes save on their own.
+- **Label says "Not synced · retrying"** in GitHub mode: GitHub couldn't be reached.
+  Your changes are kept and retried; click the label to retry now.
 - **GitHub says "The redirect_uri is not associated with this application"**: the
   Callback URL in your GitHub App doesn't exactly match `BASE_URL/auth/callback`.
 - **Stuck on "One-time setup" after creating the repo**: the app isn't installed on
