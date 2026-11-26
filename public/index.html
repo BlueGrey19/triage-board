@@ -132,6 +132,7 @@
             <button type="button" class="live" data-sync data-state="ok"><i aria-hidden="true"></i><span class="sync-txt">Saved locally</span></button>
           </div>
           <div class="active-filters" id="activeFilters" hidden></div>
+          <div class="stage-bar" id="stageBar" hidden></div>
         </div>
         <div class="hero-tools">
           <div class="search-wrap board-search">
@@ -188,6 +189,7 @@
           <kbd>/</kbd>
         </div>
         <div class="arch-sel"><label class="sr-only" for="archProj">Project</label><select id="archProj"></select></div>
+        <div class="arch-sel"><label class="sr-only" for="archStage">Stage</label><select id="archStage"></select></div>
         <div class="arch-sel"><label class="sr-only" for="archGrp">Group</label><select id="archGrp"></select></div>
       </div>
       <div id="archBanner"></div>
@@ -247,6 +249,7 @@
         </select>
       </div>
     </div>
+    <div class="fld" id="mStageFld" hidden><label for="mStage">Stage</label><select id="mStage"></select></div>
     <div class="fld"><label for="mGroup">Group / area <span class="opt">(optional)</span></label><input id="mGroup" placeholder="e.g. Books, Analytics, Truck" maxlength="80" autocomplete="off"></div>
     <div class="fld"><label for="mNote">Description <span class="opt">(optional, shown when you open the card)</span></label><textarea id="mNote" placeholder="Any detail you want on the card" maxlength="800" rows="4"></textarea></div>
     <div class="macts">

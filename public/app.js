@@ -23,6 +23,13 @@
     { k: 'orange', name: 'Orange' }, { k: 'rose', name: 'Rose' }, { k: 'pink', name: 'Pink' },
     { k: 'slate', name: 'Slate' }
   ];
+  // Same stages, in order, as the server. Activities are the suggested groups.
+  var STAGES = [
+    { k: 'implementation', name: 'Implementation', acts: ['Development', 'Configuration'] },
+    { k: 'golive', name: 'Go Live', acts: ['Training', 'Customer Testing', 'Defect Resolution'] },
+    { k: 'acceptance', name: 'Acceptance', acts: ['Final Review', 'Project Closure'] },
+    { k: 'hypercare', name: 'Hypercare', acts: ['User Onboarding', 'Support Takeover'] }
+  ];
   var STATUSES = ['open', 'doing', 'testing', 'blocked', 'done'];
   var SLAB = { open: 'Open', doing: 'Doing', testing: 'Testing', blocked: 'Blocked', done: 'Done' };
   var SCOLOR = { open: 'var(--st-open)', doing: 'var(--st-doing)', testing: 'var(--st-testing)', blocked: 'var(--st-blocked)', done: 'var(--st-done)' };
@@ -59,7 +66,7 @@
   // Archived items and closed projects: null until the Archive page is first opened.
   var archive = null;
   var archLoaded = false;
-  var archFilter = { q: '', project: 'all', group: 'all' };
+  var archFilter = { q: '', project: 'all', group: 'all', stage: 'all' };
   var detailArchId = null; // archived item shown (read-only) in the popup
 
   var appEl = document.getElementById('app');
@@ -141,7 +148,7 @@
   }
   function writeQueue() { try { localStorage.setItem(QKEY, JSON.stringify(queue)); } catch (_) {} }
   function isSnipOp(op) { return op.t.indexOf('snip.') === 0; }
-  function isArchOp(op) { return op.t.indexOf('arch.') === 0 || op.t === 'proj.close' || op.t === 'proj.reopen'; }
+  function isArchOp(op) { return op.t.indexOf('arch.') === 0 || op.t === 'proj.close' || op.t === 'proj.reopen' || op.t === 'proj.stage'; }
 
   // Apply a change to what's on screen. Used when the change is made, and
   // again after every reload for changes that haven't been saved yet.
@@ -152,6 +159,7 @@
         if (!itemById(b.id)) {
           var added = Object.assign({ status: 'open', createdAt: new Date().toISOString() }, b);
           if (added.status === 'done') added.doneAt = added.createdAt;
+          if (!added.stage || !added.project) delete added.stage;
           board.items.push(added);
         }
         break;
@@ -160,6 +168,7 @@
         if (it) {
           var wasDone = it.status === 'done';
           Object.assign(it, b);
+          if (!it.stage || !it.project) delete it.stage;
           // Same as the server: doneAt is set on the way into done, dropped on the way out.
           if (b.status === 'done' && !wasDone) it.doneAt = new Date().toISOString();
           else if (b.status && b.status !== 'done') delete it.doneAt;
@@ -203,12 +212,16 @@
       case 'proj.del':
         board.projects = board.projects.filter(function (p) { return p !== op.k; });
         if (board.projectColors) delete board.projectColors[op.k];
+        if (board.projectStages) delete board.projectStages[op.k];
         break;
       case 'arch.add':
         moveToArchive(op.snap, b.ids, null, scope);
         break;
       case 'proj.close':
         moveToArchive(op.snap, null, op.k, scope);
+        break;
+      case 'proj.stage':
+        moveStage(op, scope);
         break;
       case 'arch.restore':
         moveToBoard(op.snap, b.ids, null, scope);
@@ -250,12 +263,15 @@
       if (closing) {
         board.projects = board.projects.filter(function (p) { return p !== closing; });
         if (board.projectColors) delete board.projectColors[closing];
+        if (board.projectStages) delete board.projectStages[closing];
       }
     }
     if (archive && scope !== 'board') {
       snap.items.forEach(function (it) { if (!archItemById(it.id)) archive.items.push(clone(it)); });
       if (closing && !archive.projects.some(function (p) { return p.name === closing; })) {
-        archive.projects.push({ name: closing, color: (snap.colors && snap.colors[closing]) || '', closedAt: new Date().toISOString() });
+        var crec = { name: closing, color: (snap.colors && snap.colors[closing]) || '', closedAt: new Date().toISOString() };
+        if (snap.stages && snap.stages[closing]) crec.stage = snap.stages[closing];
+        archive.projects.push(crec);
       }
     }
   }
@@ -274,6 +290,8 @@
         board.projects.push(name);
         var c = snap.colors && snap.colors[name];
         if (c) { board.projectColors = Object.assign({}, board.projectColors); board.projectColors[name] = c; }
+        var sg = snap.stages && snap.stages[name];
+        if (sg && sg !== STAGES[0].k) { board.projectStages = Object.assign({}, board.projectStages); board.projectStages[name] = sg; }
       });
     }
     if (archive && scope !== 'board') {
@@ -282,6 +300,17 @@
       archive.items = archive.items.filter(function (it) { return !gone[it.id] && !(reopen && it.project === reopen); });
       archive.projects = archive.projects.filter(function (p) { return names.indexOf(p.name) < 0; });
     }
+  }
+  // Moving a project to another stage: items without a stage of their own keep the
+  // old one, done items from earlier stages (op.snap.items) go to the archive.
+  function moveStage(op, scope) {
+    var name = op.k, snap = op.snap || { items: [], colors: {} };
+    if (scope !== 'archive' && board.projects.indexOf(name) >= 0) {
+      board.items.forEach(function (it) { if (it.project === name && !it.stage) it.stage = snap.from; });
+      board.projectStages = Object.assign({}, board.projectStages);
+      if (op.b.stage === STAGES[0].k) delete board.projectStages[name]; else board.projectStages[name] = op.b.stage;
+    }
+    moveToArchive(snap, null, null, scope);
   }
   function applyPending(kind) {
     queue.forEach(function (op) {
@@ -311,6 +340,7 @@
     if (op.t === 'snip.patch' && /not found/i.test(err)) return what + ' was deleted somewhere else, so your change wasn’t saved.';
     if (op.t === 'proj.close' && /no longer exists/i.test(err)) return 'Project ' + what + ' was removed somewhere else, so it wasn’t closed.';
     if (op.t === 'proj.reopen' && /not in the archive/i.test(err)) return 'Project ' + what + ' is no longer in the archive, so it wasn’t reopened.';
+    if (op.t === 'proj.stage' && /no longer exists/i.test(err)) return 'Project ' + what + ' was removed somewhere else, so it wasn’t moved to another stage.';
     if (op.t === 'proj.color' && /no longer exists/i.test(err)) return 'Project ' + what + ' was removed somewhere else, so its colour wasn’t saved.';
     return 'Couldn’t save ' + what + ': ' + err;
   }
@@ -508,6 +538,25 @@
     });
     return order;
   }
+  /* ---------- project stages ---------- */
+  function stageIdx(k) {
+    for (var i = 0; i < STAGES.length; i++) if (STAGES[i].k === k) return i;
+    return -1;
+  }
+  function stageName(k) { var i = stageIdx(k); return i < 0 ? '' : STAGES[i].name; }
+  // A project's current stage; no entry means Implementation.
+  function projStage(name) {
+    var k = board.projectStages && board.projectStages[name];
+    return stageIdx(k) >= 0 ? k : STAGES[0].k;
+  }
+  // An item's stage: its own, or else its project's current one ('' without a project).
+  function itemStage(it) {
+    if (!it.project) return '';
+    return stageIdx(it.stage) >= 0 ? it.stage : projStage(it.project);
+  }
+  function stageChip(k, tip) {
+    return '<span class="stagechip" title="' + esc(tip + ': ' + stageName(k)) + '">' + esc(stageName(k)) + '</span>';
+  }
   /* ---------- project colours ---------- */
   function projColor(p) {
     var k = board.projectColors && board.projectColors[p];
@@ -600,6 +649,8 @@
     h += '<div class="meta">';
     h += '<button class="pill ' + st + '" data-act="status" aria-haspopup="menu" title="Change status">' + SLAB[st] + '</button>';
     if (showProject && it.project) h += projChip(it.project);
+    // Items left behind in an earlier stage say so; current-stage items stay clean.
+    if (it.project && stageIdx(itemStage(it)) < stageIdx(projStage(it.project))) h += stageChip(itemStage(it), 'From an earlier stage');
     groupsOf(it).forEach(function (g) {
       var on = filters.group !== 'all' && sameText(g, filters.group);
       h += '<button class="chip grp' + (on ? ' on' : '') + '" data-act="group" data-g="' + esc(g) + '" aria-pressed="' + on + '" title="' +
@@ -735,9 +786,71 @@
       boardEl.innerHTML = bands.map(function (p) { return bandHTML(p, showProject); }).join('');
     }
 
+    renderStageBar();
     renderNav();
     applyAccent();
     if (detailId) renderDetail();
+  }
+
+  /* ---------- stage track (board filtered to one project) ---------- */
+  var stageBarEl = document.getElementById('stageBar');
+  function renderStageBar() {
+    var name = filters.project;
+    if (name === 'all' || name === '(no project)' || board.projects.indexOf(name) < 0) {
+      stageBarEl.hidden = true; stageBarEl.innerHTML = ''; return;
+    }
+    var cur = stageIdx(projStage(name));
+    var h = '<div class="stage-track" role="group" aria-label="Stage of ' + esc(name) + '">';
+    STAGES.forEach(function (s, i) {
+      var cls = i < cur ? 'done' : i === cur ? 'cur' : 'todo';
+      h += '<button type="button" class="stage-seg ' + cls + '" data-stage="' + s.k + '"' +
+        (i === cur ? ' aria-current="step" aria-label="' + s.name + ' (current stage)"'
+          : ' title="' + (i < cur ? 'Move back to ' : 'Move to ') + s.name + '"') + '>' +
+        (i < cur ? ICON.check : '') + '<span>' + s.name + '</span></button>';
+    });
+    h += '</div>';
+    var last = cur === STAGES.length - 1;
+    h += '<button type="button" class="btn primary sm stage-next" data-stage-next="1">' +
+      (last ? 'Close project' : 'Move to ' + STAGES[cur + 1].name) + '</button>';
+    stageBarEl.innerHTML = h;
+    stageBarEl.hidden = false;
+    // On a narrow screen the track scrolls sideways: keep the current stage in view.
+    var tr = stageBarEl.querySelector('.stage-track'), seg = stageBarEl.querySelector('.stage-seg.cur');
+    if (tr.scrollWidth > tr.clientWidth) tr.scrollLeft = Math.max(0, seg.offsetLeft - 40);
+  }
+  stageBarEl.addEventListener('click', function (e) {
+    var name = filters.project;
+    if (e.target.closest('[data-stage-next]')) {
+      var cur = stageIdx(projStage(name));
+      if (cur === STAGES.length - 1) closeProject(name); else moveProjectStage(name, STAGES[cur + 1].k);
+      return;
+    }
+    var seg = e.target.closest('[data-stage]');
+    if (seg) moveProjectStage(name, seg.dataset.stage);
+  });
+  function plural(n, one, many) { return n + ' ' + (n === 1 ? one : many); }
+  function moveProjectStage(name, key) {
+    var from = stageIdx(projStage(name)), to = stageIdx(key);
+    if (to < 0 || to === from || board.projects.indexOf(name) < 0) return;
+    var label = STAGES[to].name, mine = board.items.filter(function (i) { return i.project === name; });
+    var title, msg, toArchive = [];
+    if (to < from) {
+      title = 'Move ' + name + ' back to ' + label + '?';
+      msg = 'Nothing is archived. New items will go into ' + label + '.';
+    } else {
+      toArchive = mine.filter(function (i) { return i.status === 'done' && stageIdx(itemStage(i)) < to; });
+      var n = toArchive.length, m = mine.filter(notDone).length;
+      title = 'Move ' + name + ' to ' + label + '?';
+      msg = (n ? plural(n, 'done item moves', 'done items move') + ' to the Archive.' : 'No done items to archive.') + ' ' +
+        (m ? plural(m, 'unfinished item stays', 'unfinished items stay') + ' on the board.' : 'No unfinished items.');
+    }
+    confirmDialog({ title: title, message: msg, ok: 'Move', plain: true }).then(function (ok) {
+      if (!ok) return;
+      var now = new Date().toISOString();
+      change({ t: 'proj.stage', m: 'POST', u: '/api/projects/' + encodeURIComponent(name) + '/stage', b: { stage: key }, k: name, label: name,
+        snap: { from: projStage(name), colors: {}, items: toArchive.map(function (i) { var c = clone(i); c.archivedAt = now; c.stage = itemStage(i); return c; }) } });
+      toast(name + ' moved to ' + label, true);
+    });
   }
 
   /* ---------- sidebar ---------- */
@@ -757,7 +870,9 @@
       var pk = projColor(p);
       return '<button class="nav-item" data-nav="project" data-v="' + esc(p) + '"' + (pk ? ' style="--acc:' + pcVar(pk) + '"' : '') +
         (page === 'board' && filters.project === p ? ' aria-current="page"' : '') + '>' +
-        '<span class="nav-dot" style="--c:' + pcVar(projColor(p)) + '"></span><span>' + esc(p) + '</span><span class="nav-count">' + (n || '') + '</span></button>';
+        '<span class="nav-dot" style="--c:' + pcVar(projColor(p)) + '"></span><span class="nav-name">' + esc(p) +
+        (board.projects.indexOf(p) >= 0 ? '<span class="nav-stage"> · ' + stageName(projStage(p)) + '</span>' : '') +
+        '</span><span class="nav-count">' + (n || '') + '</span></button>';
     }).join('') : '<p class="nav-empty">No projects yet</p>';
 
     var groups = allGroups();
@@ -885,15 +1000,18 @@
     var title = it.title;
     change({ t: 'item.patch', m: 'PATCH', u: '/api/items/' + encodeURIComponent(id) + (undoing ? '?undo=1' : ''), b: diff, k: id, label: title });
     if (undoing) return toast('Change undone', true);
-    toast(changeText(it.title, diff), false, function () { patchItem(id, before, true); });
+    toast(changeText(it.title, diff, it), false, function () { patchItem(id, before, true); });
   }
-  function changeText(title, diff) {
+  function changeText(title, diff, it) {
     var t = '“' + (title.length > 40 ? title.slice(0, 39) + '…' : title) + '” ';
     var keys = Object.keys(diff);
+    // The stage follows a project change, so it isn't a change of its own then.
+    if (diff.project != null && keys.length === 2 && 'stage' in diff) keys = ['project'];
     if (keys.length > 1 || keys[0] === 'title') return t.replace(/ $/, '') + ' updated';
     if (keys[0] === 'status') return t + (diff.status === 'done' ? 'marked done' : 'moved to ' + SLAB[diff.status]);
     if (keys[0] === 'prio') return t + 'set to ' + PLAB[diff.prio] + ' priority';
     if (keys[0] === 'project') return t + (diff.project ? 'moved to ' + diff.project : 'removed from its project');
+    if (keys[0] === 'stage') return t + 'moved to ' + stageName(diff.stage || projStage(it.project)) + ' stage';
     return t + 'updated';
   }
   function deleteItem(id) {
@@ -1016,7 +1134,7 @@
     });
     syncSelect(sel);
   }
-  var SELECT_IDS = ['mProj', 'mPrio', 'sLang', 'archProj', 'archGrp'];
+  var SELECT_IDS = ['mProj', 'mStage', 'mPrio', 'sLang', 'archProj', 'archStage', 'archGrp'];
   SELECT_IDS.forEach(function (id) { enhanceSelect(document.getElementById(id)); });
   function syncSelects() { SELECT_IDS.forEach(function (id) { syncSelect(document.getElementById(id)); }); }
 
@@ -1108,7 +1226,14 @@
     return out.sort(function (a, b) { return a.localeCompare(b); });
   }
   // Groups are comma-separated, so suggest for the entry being typed (like tags).
-  attachSuggest(document.getElementById('mGroup'), allGroups, true);
+  // In a project, the activities of the chosen stage come first.
+  function groupSuggestions() {
+    var i = document.getElementById('mProj').value ? stageIdx(document.getElementById('mStage').value) : -1;
+    return i < 0 ? allGroups() : STAGES[i].acts.concat(allGroups().filter(function (g) {
+      return !STAGES[i].acts.some(function (a) { return sameText(a, g); });
+    }));
+  }
+  attachSuggest(document.getElementById('mGroup'), groupSuggestions, true);
   attachSuggest(document.getElementById('sTags'), function () {
     var all = []; snippets.forEach(function (s) { all = all.concat(s.tags); });
     return uniqueSorted(all);
@@ -1327,7 +1452,7 @@
     var st = it.status || 'open', pr = it.prio || 'medium';
     detailEl.className = 'modal detail ' + pr;
     var h = '<div class="d-top"><div class="d-crumbs"><span class="d-prio">' + PLAB[pr] + '</span>';
-    if (it.project) h += projChip(it.project);
+    if (it.project) h += projChip(it.project) + stageChip(itemStage(it), 'Stage');
     groupsOf(it).forEach(function (g) { h += '<span class="chip">' + esc(g) + '</span>'; });
     h += '</div><h2 id="dTitle">' + esc(it.title) + '</h2></div>';
     h += '<div class="d-body">';
@@ -1446,6 +1571,15 @@
     sel.innerHTML = board.projects.map(function (p) { return '<option>' + esc(p) + '</option>'; }).join('')
       || '<option value="">(add a project first)</option>';
   }
+  // The Stage field only shows with a project; it starts at that project's current stage.
+  function setStageField(project, stage) {
+    var sel = document.getElementById('mStage');
+    document.getElementById('mStageFld').hidden = !project;
+    sel.value = project ? (stage || projStage(project)) : STAGES[0].k;
+    syncSelect(sel);
+  }
+  document.getElementById('mStage').innerHTML = STAGES.map(function (s) { return '<option value="' + s.k + '">' + s.name + '</option>'; }).join('');
+  document.getElementById('mProj').addEventListener('change', function () { setStageField(this.value, ''); });
   function openAdd(prio) {
     editingId = null;
     document.getElementById('mTitle').textContent = 'New item';
@@ -1458,6 +1592,7 @@
     fillProjectSelect(sel);
     if (filters.project !== 'all' && board.projects.indexOf(filters.project) >= 0) sel.value = filters.project;
     document.getElementById('mPrio').value = prio || (filters.prio !== 'all' ? filters.prio : 'medium');
+    setStageField(sel.value, '');
     syncSelects();
     modalBg.classList.add('open');
     setTimeout(function () { document.getElementById('mTitleIn').focus(); }, 30);
@@ -1474,6 +1609,7 @@
     document.getElementById('mPrio').value = it.prio || 'medium';
     document.getElementById('mGroup').value = it.group || '';
     document.getElementById('mNote').value = it.note || '';
+    setStageField(it.project, itemStage(it));
     syncSelects();
     modalBg.classList.add('open');
     setTimeout(function () { document.getElementById('mTitleIn').focus(); }, 30);
@@ -1492,8 +1628,15 @@
       project: document.getElementById('mProj').value,
       prio: document.getElementById('mPrio').value,
       group: document.getElementById('mGroup').value.trim(),
-      note: document.getElementById('mNote').value.trim()
+      note: document.getElementById('mNote').value.trim(),
+      stage: ''
     };
+    if (payload.project) {
+      payload.stage = document.getElementById('mStage').value;
+      // An item with no stage of its own that stays in its project's current stage stays stage-less.
+      var cur0 = editingId && itemById(editingId);
+      if (cur0 && !cur0.stage && payload.stage === projStage(payload.project)) payload.stage = '';
+    }
     // if adding into a filtered-out priority/project/status, relax filters so it's visible
     if (!editingId) {
       if (filters.prio !== 'all' && filters.prio !== payload.prio) filters.prio = 'all';
@@ -1601,7 +1744,9 @@
 
   document.getElementById('plist').addEventListener('click', function (e) {
     var b = e.target.closest('.pcl'); if (!b) return;
-    var name = b.dataset.p;
+    closeProject(b.dataset.p);
+  });
+  function closeProject(name) {
     var items = board.items.filter(function (i) { return i.project === name; });
     var n = items.length, m = items.filter(notDone).length;
     var tail = 'The project leaves the board and is kept in the Archive, where you can reopen it.';
@@ -1615,9 +1760,9 @@
       if (filters.project === name) filters.project = 'all';
       var now = new Date().toISOString();
       change({ t: 'proj.close', m: 'POST', u: '/api/projects/' + encodeURIComponent(name) + '/close', k: name, label: name,
-        snap: { items: items.map(function (i) { var c = clone(i); c.archivedAt = now; return c; }), colors: oneColor(name, board.projectColors) } });
+        snap: { items: items.map(function (i) { var c = clone(i); c.archivedAt = now; return c; }), colors: oneColor(name, board.projectColors), stages: oneStage(name, projStage(name)) } });
     });
-  });
+  }
 
   /* ---------- toast ---------- */
   // A message at the bottom of the screen. With `undo` it also shows an Undo
@@ -1959,6 +2104,7 @@
   var archSearch = document.getElementById('archSearch');
   var archProjSel = document.getElementById('archProj');
   var archGrpSel = document.getElementById('archGrp');
+  var archStageSel = document.getElementById('archStage');
   var archDoneBtn = document.getElementById('archDone');
 
   function loadArchive() {
@@ -1980,6 +2126,7 @@
     });
   }
 
+  function oneStage(name, k) { var o = {}; o[name] = k; return o; }
   function oneColor(name, map) { var o = {}; if (map && map[name]) o[name] = map[name]; return o; }
   function closedRec(name) {
     var list = archive ? archive.projects : [];
@@ -2008,10 +2155,10 @@
     });
   }
   function sendRestore(items) {
-    var colors = {};
-    if (archive) archive.projects.forEach(function (p) { if (p.color) colors[p.name] = p.color; });
+    var colors = {}, stages = {};
+    if (archive) archive.projects.forEach(function (p) { if (p.color) colors[p.name] = p.color; if (p.stage) stages[p.name] = p.stage; });
     change({ t: 'arch.restore', m: 'POST', u: '/api/archive/restore', b: { ids: items.map(function (i) { return i.id; }) }, k: items[0].id,
-      label: items.length === 1 ? items[0].title : items.length + ' items', snap: { items: items.map(clone), colors: colors } });
+      label: items.length === 1 ? items[0].title : items.length + ' items', snap: { items: items.map(clone), colors: colors, stages: stages } });
   }
   function restoreOne(id) {
     var it = archItemById(id); if (!it) return;
@@ -2042,7 +2189,14 @@
     if (!k && rec && PROJ_COLORS.some(function (c) { return c.k && c.k === rec.color; })) k = rec.color;
     return projChip(name, k);
   }
+  // An archived item's stage: its own, or its closed project's.
+  function archStage(it) {
+    if (stageIdx(it.stage) >= 0) return it.stage;
+    var rec = it.project && closedRec(it.project);
+    return rec && stageIdx(rec.stage) >= 0 ? rec.stage : '';
+  }
   function archMatches(it) {
+    if (archFilter.stage !== 'all' && archStage(it) !== archFilter.stage) return false;
     if (archFilter.project !== 'all' && archProjName(it) !== archFilter.project) return false;
     if (archFilter.group !== 'all' && !groupsOf(it).some(function (g) { return sameText(g, archFilter.group); })) return false;
     var q = archFilter.q.trim().toLowerCase();
@@ -2068,6 +2222,8 @@
       var r = closedRec(n), d = r && fmtDate(r.closedAt);
       return { v: n, t: r ? n + ' · closed' + (d ? ' ' + d : '') : n };
     })), archFilter.project);
+
+    setOptions(archStageSel, [{ v: 'all', t: 'All stages' }].concat(STAGES.map(function (s) { return { v: s.k, t: s.name }; })), archFilter.stage);
 
     var groups = [];
     items.forEach(function (it) {
@@ -2104,6 +2260,7 @@
     h += '<button type="button" class="arch-title" data-act="open">' + esc(it.title) + '</button>';
     h += '<div class="meta"><span class="pill static ' + st + '">' + SLAB[st] + '</span>';
     if (it.project) h += archProjChip(it.project);
+    if (archStage(it)) h += stageChip(archStage(it), 'Stage');
     groupsOf(it).forEach(function (g) { h += '<span class="chip">' + esc(g) + '</span>'; });
     var steps = it.subtasks || [];
     if (steps.length) {
@@ -2129,13 +2286,14 @@
     if (!e.target.closest('[data-act="reopen"]')) return;
     var name = archFilter.project, rec = closedRec(name); if (!rec) return;
     var items = archive.items.filter(function (it) { return archProjName(it) === name; });
-    var n = items.length, colors = {};
+    var n = items.length, colors = {}, stages = {};
     if (rec.color) colors[name] = rec.color;
+    if (rec.stage) stages[name] = rec.stage;
     confirmDialog({ title: 'Reopen ' + name + '?', message: 'The project and its ' + n + ' item' + (n === 1 ? '' : 's') + ' go back on the board.', ok: 'Reopen', plain: true }).then(function (ok) {
       if (!ok) return;
       archFilter.project = 'all'; archFilter.group = 'all';
       change({ t: 'proj.reopen', m: 'POST', u: '/api/projects/' + encodeURIComponent(name) + '/reopen', k: name, label: name,
-        snap: { items: items.map(clone), colors: colors } });
+        snap: { items: items.map(clone), colors: colors, stages: stages } });
       toast(name + ' reopened', true);
     });
   });
@@ -2144,6 +2302,7 @@
     if (e.key === 'Escape' && archSearch.value) { e.stopPropagation(); archSearch.value = ''; archFilter.q = ''; renderArchive(); }
   });
   archProjSel.addEventListener('change', function () { archFilter.project = archProjSel.value; renderArchive(); });
+  archStageSel.addEventListener('change', function () { archFilter.stage = archStageSel.value; renderArchive(); });
   archGrpSel.addEventListener('change', function () { archFilter.group = archGrpSel.value; renderArchive(); });
 
   // Read-only look at an archived item, in the same popup as board items.
@@ -2160,6 +2319,7 @@
     detailEl.className = 'modal detail ' + pr;
     var h = '<div class="d-top"><div class="d-crumbs"><span class="d-prio">' + PLAB[pr] + '</span>';
     if (it.project) h += archProjChip(it.project);
+    if (archStage(it)) h += stageChip(archStage(it), 'Stage');
     groupsOf(it).forEach(function (g) { h += '<span class="chip">' + esc(g) + '</span>'; });
     h += '</div><h2 id="dTitle">' + esc(it.title) + '</h2></div><div class="d-body">';
     h += '<div class="d-section"><p class="d-label">Status</p><span class="pill static ' + st + '">' + SLAB[st] + '</span></div>';

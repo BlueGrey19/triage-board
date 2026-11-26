@@ -156,8 +156,10 @@ a { color: var(--acc); }
   color: var(--text);
 }
 .nav-item[aria-current="page"] .ni { color: var(--acc); }
+.nav-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.nav-stage { font-size: 11.5px; font-weight: 500; color: var(--text-3); }
 .nav-count {
-  margin-left: auto; font-size: 11.5px; font-weight: 600; color: var(--text-3);
+  margin-left: auto; flex: none; font-size: 11.5px; font-weight: 600; color: var(--text-3);
   font-variant-numeric: tabular-nums;
 }
 .nav-caret {
@@ -474,6 +476,8 @@ h1 .acc { color: var(--acc); }
 button.chip { border: 0; cursor: pointer; font-family: inherit; transition: background .15s, color .15s; }
 .chip.grp:hover { color: var(--text); background: color-mix(in srgb, var(--acc) 14%, var(--panel-3)); }
 .chip.grp.on { color: var(--acc); background: color-mix(in srgb, var(--acc) 16%, transparent); font-weight: 600; }
+/* stage of an item left behind in an earlier stage. Not a .chip, so it stays in compact layout */
+.stagechip { display: inline-flex; align-items: center; max-width: 100%; padding: 1px 8px; border-radius: 99px; font-size: 11px; font-weight: 600; color: var(--text-3); box-shadow: inset 0 0 0 1px var(--line-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 /* checklist progress, e.g. 2/5. Not a .chip, so it stays visible in compact layout */
 .steps { display: inline-flex; align-items: center; gap: 4px; font-size: 11.5px; font-weight: 600; color: var(--text-3); white-space: nowrap; font-variant-numeric: tabular-nums; }
 .steps svg { width: 13px; height: 13px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
@@ -495,6 +499,13 @@ button.chip { border: 0; cursor: pointer; font-family: inherit; transition: back
 .board.compact .meta .chip, .board.compact .has-note { display: none; }
 .board.compact .pill { font-size: 0; gap: 0; padding: 5px; }  /* status shown as a dot only */
 .board.compact .pill::before { width: 7px; height: 7px; }
+/* the title keeps room; the earlier-stage chip shortens instead */
+.board.compact .card { grid-template-columns: auto minmax(72px, 1fr) minmax(0, auto) auto; }
+.board.compact .meta { min-width: 0; flex-wrap: nowrap; overflow: hidden; }
+.board.compact .stagechip { display: inline-block; min-width: 0; max-width: 110px; flex-shrink: 1; }
+/* in a narrow column there's no room for it; cards view and the popup still show it */
+.board.compact .band-body { container-type: inline-size; }
+@container (max-width: 320px) { .board.compact .stagechip { display: none; } }
 
 /* ---------- popover menu ---------- */
 .pop {
@@ -904,6 +915,31 @@ button.chip { border: 0; cursor: pointer; font-family: inherit; transition: back
   .stat { flex: 0 0 auto; }
   .frow { flex-direction: column; gap: 0; }
   .d-status button { font-size: 11.5px; }
+}
+/* ---------- project stage track (board filtered to one project) ---------- */
+.stage-bar { display: flex; align-items: center; gap: 10px 14px; flex-wrap: wrap; margin-top: 14px; }
+.stage-bar[hidden] { display: none; }
+.stage-track { display: flex; min-width: 0; max-width: 100%; overflow-x: auto; scrollbar-width: none; }
+.stage-track::-webkit-scrollbar { display: none; }
+.stage-seg {
+  --pt: 11px;
+  flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  height: 34px; padding: 0 calc(var(--pt) + 8px); margin-left: -4px; border: 0; cursor: pointer;
+  font-family: inherit; font-size: 12.5px; font-weight: 600; white-space: nowrap;
+  color: var(--text-3); background: var(--panel-3); transition: background .15s, color .15s;
+  clip-path: polygon(0 0, calc(100% - var(--pt)) 0, 100% 50%, calc(100% - var(--pt)) 100%, 0 100%, var(--pt) 50%);
+}
+.stage-seg:first-child { margin-left: 0; padding-left: 16px; clip-path: polygon(0 0, calc(100% - var(--pt)) 0, 100% 50%, calc(100% - var(--pt)) 100%, 0 100%); border-radius: 8px 0 0 8px; }
+.stage-seg:last-child { padding-right: 16px; clip-path: polygon(0 0, 100% 0, 100% 100%, 0 100%, var(--pt) 50%); border-radius: 0 8px 8px 0; }
+.stage-seg svg { width: 13px; height: 13px; fill: none; stroke: currentColor; stroke-width: 2.6; stroke-linecap: round; stroke-linejoin: round; }
+.stage-seg.done { color: var(--st-done); background: color-mix(in srgb, var(--st-done) 14%, var(--panel-2)); }
+.stage-seg.cur { color: var(--acc-ink, #fff); background: linear-gradient(180deg, var(--acc-2), var(--acc)); cursor: default; }
+.stage-seg.done:hover, .stage-seg.todo:hover { color: var(--text); background: color-mix(in srgb, var(--acc) 16%, var(--panel-3)); }
+.stage-seg:focus-visible { outline: 0; box-shadow: inset 0 0 0 2px var(--text); }
+.stage-next { flex: none; }
+@media (max-width: 700px) {
+  .stage-track { flex: 1 1 100%; }
+  .stage-next { flex: 1 1 100%; }
 }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { transition: none !important; }

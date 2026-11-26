@@ -22,7 +22,7 @@ const express = require('express');
 require('./lib/env').loadEnv(path.join(__dirname, '.env'));
 
 const {
-  HttpError, SNIPPET_ID_RE, ITEM_ID_RE, SUBTASK_ID_RE, MAX_SUBTASKS, sanitizeSubtask, normalizeBoard, cleanProjectColor, oneLine, sanitizeItem, sanitizeSnippet
+  HttpError, SNIPPET_ID_RE, ITEM_ID_RE, SUBTASK_ID_RE, MAX_SUBTASKS, sanitizeSubtask, normalizeBoard, cleanProjectColor, STAGES, STAGE_KEYS, projectStage, effectiveStage, oneLine, sanitizeItem, sanitizeSnippet
 } = require('./lib/model');
 const { GitHubError, request, authorizeUrl, exchangeCode, refreshToken } = require('./lib/github');
 const { parseCookies, serializeCookie, createSealer } = require('./lib/session');
@@ -247,6 +247,7 @@ app.delete('/api/projects/:name', h(async (req, res) => {
   const board = await req.store.mutateBoard(b => {
     b.projects = b.projects.filter(p => p !== name);
     delete b.projectColors[name];
+    delete b.projectStages[name];
     return b;
   }, 'Remove project: ' + name);
   res.json(board);
@@ -260,6 +261,8 @@ app.post('/api/items', h(async (req, res) => {
   const saved = await req.store.mutateBoard(b => {
     const existing = b.items.find(i => i.id === item.id);
     if (existing) return existing;
+    // New items start in their project's current stage.
+    if (item.project && !item.stage) item.stage = projectStage(b, item.project);
     b.items.push(item);
     return item;
   }, 'Add item: ' + item.title);
@@ -370,7 +373,8 @@ function itemIds(req) {
 const moveMessage = (verb, items) =>
   items.length === 1 ? verb + ' item: ' + items[0].title : verb + ' ' + items.length + ' items';
 
-async function archiveItems(store, items, message, closing) {
+// boardExtra: optional change to make in the same board write as the removal.
+async function archiveItems(store, items, message, closing, boardExtra) {
   const now = new Date().toISOString();
   await store.mutateArchive(a => {
     items.forEach(it => {
@@ -378,6 +382,7 @@ async function archiveItems(store, items, message, closing) {
     });
     if (closing) {
       const rec = { name: closing.name, color: closing.color, closedAt: now };
+      if (closing.stage) rec.stage = closing.stage;
       const i = a.projects.findIndex(p => p.name === closing.name);
       if (i < 0) a.projects.push(rec); else a.projects[i] = rec;
     }
@@ -388,14 +393,17 @@ async function archiveItems(store, items, message, closing) {
     if (closing) {
       b.projects = b.projects.filter(p => p !== closing.name);
       delete b.projectColors[closing.name];
+      delete b.projectStages[closing.name];
     }
+    if (boardExtra) boardExtra(b);
   }, message);
 }
 
 // reopen: a project to put back on the board even when it has no items.
 async function restoreItems(store, archive, items, message, reopen) {
+  const recOf = name => archive.projects.find(p => p.name === name);
   const colorOf = name => {
-    const rec = archive.projects.find(p => p.name === name);
+    const rec = recOf(name);
     return rec ? cleanProjectColor(rec.color) : '';
   };
   const board = await store.mutateBoard(b => {
@@ -412,6 +420,8 @@ async function restoreItems(store, archive, items, message, reopen) {
       b.projects.push(name);
       const c = colorOf(name);
       if (c) b.projectColors[name] = c;
+      const rec = recOf(name);
+      if (rec && rec.stage && rec.stage !== STAGE_KEYS[0]) b.projectStages[name] = rec.stage;
     });
     return b;
   }, message);
@@ -453,7 +463,37 @@ app.post('/api/projects/:name/close', h(async (req, res) => {
     throw new HttpError(404, 'That project no longer exists.');
   }
   const items = board.items.filter(i => i.project === name);
-  await archiveItems(req.store, items, 'Close project: ' + name, { name, color: board.projectColors[name] || '' });
+  await archiveItems(req.store, items, 'Close project: ' + name, { name, color: board.projectColors[name] || '', stage: projectStage(board, name) });
+  res.json({ ok: true });
+}));
+
+// Move a project to another stage. Forward also archives the project's done
+// items from earlier stages; either way, items without a stage of their own are
+// stamped with the old one so they don't jump along with the project.
+app.post('/api/projects/:name/stage', h(async (req, res) => {
+  const name = req.params.name;
+  const stage = req.body && req.body.stage;
+  if (!STAGE_KEYS.includes(stage)) throw new HttpError(400, 'Unknown stage.');
+  const board = await req.store.getBoard();
+  if (!board.projects.includes(name)) throw new HttpError(404, 'That project no longer exists.');
+  const from = STAGE_KEYS.indexOf(projectStage(board, name));
+  const to = STAGE_KEYS.indexOf(stage);
+  if (to === from) return res.json({ ok: true });
+  const label = STAGES[to].name;
+  const change = b => {
+    const old = projectStage(b, name);
+    b.items.forEach(i => { if (i.project === name && !i.stage) i.stage = old; });
+    if (stage === STAGE_KEYS[0]) delete b.projectStages[name];
+    else b.projectStages[name] = stage;
+  };
+  if (to < from) {
+    await req.store.mutateBoard(change, 'Move ' + name + ' back to ' + label);
+  } else {
+    const items = board.items.filter(i => i.project === name && i.status === 'done' &&
+      STAGE_KEYS.indexOf(effectiveStage(board, i)) < to)
+      .map(i => ({ ...i, stage: effectiveStage(board, i) }));
+    await archiveItems(req.store, items, 'Move ' + name + ' to ' + label, null, change);
+  }
   res.json({ ok: true });
 }));
 
