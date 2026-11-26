@@ -35,12 +35,26 @@ It runs in one of two modes:
 - **Status per item:** Open, Doing, Testing, Blocked, Done. Click the status pill on a
   card to change it. Done items fold away under "✓ N done" in each column, and the item
   remembers the date it was marked done.
+- **Quick add** (or press `Q`): paste a list, such as a client's email of amendments,
+  and each line becomes an item. Bullets and numbering are stripped, and indented lines
+  become checklist steps of the item above:
+
+  ```
+  - Fix login redirect
+      - Check callback URL
+  - Update invoice template
+  ```
+
+  Set the project, priority and group once for the batch, edit or remove anything in the
+  preview, then add up to 100 items as one change (one commit in GitHub mode).
 - **Checklists:** break an item into steps from its popup. Type a step and press Enter
   to add it, tick it off, click its text to edit it, or remove it with ×. Cards show
   progress as `☑ 2/5`, and search finds step text too. Status stays manual.
 - **Undo:** after changing an item's status, priority, project or stage, or saving an
   edit, a message offers **Undo** for a few seconds (or press `Ctrl+Z`). Deletes still
   ask first instead.
+- **Linked snippets:** link the code you used to an item from its popup (**Link
+  snippet**). Cards show a link count, and clicking a linked snippet opens it.
 - **Cards or Compact view.** Compact shows one line per item. Your choice is remembered.
 - **Sidebar filters** for priority, project and group, plus a **group filter** and
   **search** on the board itself. They combine (e.g. Project: Milltrans + Group: Books),
@@ -89,7 +103,14 @@ Every project moves through the same delivery stages:
 - **Two-pane library:** a searchable list on the left; the selected snippet on the right
   with line numbers, syntax highlighting (including Deluge) and one-click copy.
 - Each snippet has a title, language, **Used in** (e.g. Workflow function, Webhook,
-  Client script), tags, description and code. Filter by Used in or by tag.
+  Client script), tags, **projects**, description and code.
+- **Filters** sit on one row: Used in and Project dropdowns, the most-used tags, and
+  **More tags** to search every tag. Type `#tag` in the search box to filter by a tag
+  (e.g. `#books invoice`). Active filters show as removable chips.
+- **Links to the board:** a snippet's **Used for** list shows the items it's linked to
+  (archived ones too), and **Link to item** links one from this side. A snippet can also
+  belong to projects directly, e.g. a client's API helper. Filter the board to a project
+  and its **Snippets** button lists everything linked to it, directly or through its items.
 
 ### General
 
@@ -109,6 +130,7 @@ Every project moves through the same delivery stages:
 |---|---|
 | `/` | Jump to search (board or snippets) |
 | `N` | Add a new board item |
+| `Q` | Quick add: paste a list of items |
 | `Ctrl+Z` | Undo the last change while its message is showing (not while typing) |
 | `Esc` | Close the open menu or window, or clear the search box |
 | `↑` `↓` `Enter` | Move through and pick from menus, dropdowns and suggestions |
@@ -156,9 +178,11 @@ In VS Code you can also press **F5**. The included launch config starts the serv
   ```
 
   A snippet file starts with a short header (title, language, optional `type` for
-  "Used in", tags, dates), followed by the description and the code block.
+  "Used in", tags, optional `projects`, dates), followed by the description and the
+  code block. Links from items to snippets are stored on the items in `board.json`.
 
-  Each change is a commit (`Add item: …`, `Tick step: …`, `Move Milltrans to Go Live`),
+  Each change is a commit (`Add item: …`, `Tick step: …`, `Link snippet: …`,
+  `Move Milltrans to Go Live`),
   so you can view history, diff and roll back on github.com. Archiving writes
   `archive.json` first and then `board.json` (two commits), so an interrupted move can
   never lose an item. You can also hand-edit snippet files
