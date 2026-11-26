@@ -220,7 +220,12 @@
           </button>
         </div>
       </div>
-      <div class="tagrow" id="tagFilters"></div>
+      <div class="snip-filters" id="snipFilters">
+        <div class="sf-sel" id="snipTypeWrap"><label class="sr-only" for="snipType">Used in</label><select id="snipType"></select></div>
+        <div class="sf-sel" id="snipProjWrap"><label class="sr-only" for="snipProj">Project</label><select id="snipProj"></select></div>
+        <div class="sf-tags" id="tagFilters" role="group" aria-label="Tags"></div>
+      </div>
+      <div class="active-filters" id="snipActive" hidden></div>
 
       <div class="lib" id="lib">
         <div class="lib-list" id="snips"><p class="empty">Loading…</p></div>
@@ -337,6 +342,7 @@
       <div class="fld"><label for="sType">Used in <span class="opt">(optional)</span></label><input id="sType" placeholder="e.g. Workflow function, Webhook" maxlength="40" autocomplete="off"></div>
     </div>
     <div class="fld"><label for="sTags">Tags <span class="opt">(comma separated)</span></label><input id="sTags" placeholder="books, api, dates" autocomplete="off"></div>
+    <div class="fld"><label for="sProjects">Projects <span class="opt">(optional, comma separated)</span></label><input id="sProjects" placeholder="Alpha, Beta" autocomplete="off"></div>
     <div class="fld"><label for="sDesc">Description <span class="opt">(optional)</span></label><textarea id="sDesc" placeholder="When to use it, gotchas, which clients" maxlength="4000"></textarea></div>
     <div class="fld"><label for="sCode">Code</label><textarea id="sCode" class="code-in" spellcheck="false" placeholder="Paste the snippet here"></textarea></div>
     <div class="macts">

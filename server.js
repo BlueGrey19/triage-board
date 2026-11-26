@@ -22,7 +22,7 @@ const express = require('express');
 require('./lib/env').loadEnv(path.join(__dirname, '.env'));
 
 const {
-  HttpError, SNIPPET_ID_RE, ITEM_ID_RE, SUBTASK_ID_RE, MAX_SUBTASKS, sanitizeSubtask, normalizeBoard, cleanProjectColor, STAGES, STAGE_KEYS, projectStage, effectiveStage, oneLine, sanitizeItem, sanitizeSnippet
+  HttpError, SNIPPET_ID_RE, ITEM_ID_RE, SUBTASK_ID_RE, MAX_SUBTASKS, MAX_SNIPPET_LINKS, sanitizeSubtask, normalizeBoard, cleanProjectColor, STAGES, STAGE_KEYS, projectStage, effectiveStage, oneLine, sanitizeItem, sanitizeSnippet
 } = require('./lib/model');
 const { GitHubError, request, authorizeUrl, exchangeCode, refreshToken } = require('./lib/github');
 const { parseCookies, serializeCookie, createSealer } = require('./lib/session');
@@ -371,6 +371,56 @@ app.delete('/api/items/:id/subtasks/:sid', h(async (req, res) => {
     it.subtasks = it.subtasks.filter(s => s.id !== sid);
     if (!it.subtasks.length) delete it.subtasks;
   }, () => 'Remove step: ' + label + ' (' + title + ')');
+  res.json({ ok: true });
+}));
+
+/* ---------- linked snippets ---------- */
+
+function linkSnippetId(v) {
+  const sid = String(v || '');
+  if (!SNIPPET_ID_RE.test(sid)) throw new HttpError(400, 'Bad snippet id.');
+  return sid;
+}
+
+// Already linked (a retry) returns the item unchanged.
+app.post('/api/items/:id/snippets', h(async (req, res) => {
+  const sid = linkSnippetId(req.body && req.body.snippetId);
+  const found = await req.store.getSnippet(sid);
+  let title = '';
+  // Check the item first so an unknown item is reported as such.
+  const board = await req.store.getBoard();
+  if (!board.items.some(i => i.id === req.params.id)) throw new HttpError(404, 'Item not found.');
+  if (!found) throw new HttpError(404, 'Snippet not found.');
+  const item = await req.store.mutateBoard(b => {
+    const it = b.items.find(i => i.id === req.params.id);
+    if (!it) throw new HttpError(404, 'Item not found.');
+    title = it.title;
+    if (!Array.isArray(it.snippets)) it.snippets = [];
+    if (it.snippets.includes(sid)) return it;
+    if (it.snippets.length >= MAX_SNIPPET_LINKS) throw new HttpError(400, 'This item already has ' + MAX_SNIPPET_LINKS + ' linked snippets.');
+    it.snippets.push(sid);
+    return it;
+  }, () => 'Link snippet: ' + found.snippet.title + ' → ' + title);
+  res.json(item);
+}));
+
+// Already gone (item or link) counts as done. The snippet itself may be gone too.
+app.delete('/api/items/:id/snippets/:sid', h(async (req, res) => {
+  const sid = linkSnippetId(req.params.sid);
+  let title = '';
+  const board = await req.store.getBoard();
+  const has = board.items.find(i => i.id === req.params.id);
+  if (has && Array.isArray(has.snippets) && has.snippets.includes(sid)) {
+    const found = await req.store.getSnippet(sid);
+    const label = found ? found.snippet.title : sid;
+    await req.store.mutateBoard(b => {
+      const it = b.items.find(i => i.id === req.params.id);
+      if (!it || !Array.isArray(it.snippets) || !it.snippets.includes(sid)) return;
+      title = it.title;
+      it.snippets = it.snippets.filter(x => x !== sid);
+      if (!it.snippets.length) delete it.snippets;
+    }, () => 'Unlink snippet: ' + label + ' → ' + title);
+  }
   res.json({ ok: true });
 }));
 

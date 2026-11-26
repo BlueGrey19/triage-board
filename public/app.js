@@ -44,6 +44,7 @@
     back:  '<svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="15 18 9 12 15 6"/></svg>',
     copy:  '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>',
     steps: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="4"/><polyline points="8 12 11 15 16 9"/></svg>',
+    link:  '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7"/><path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7"/></svg>',
     archive: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="5" rx="1.5"/><path d="M5 9v9a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V9M10 13h4"/></svg>',
     code:  '<svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>',
     active:  '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="3"/></svg>',
@@ -204,6 +205,20 @@
           if (!dit.subtasks.length) delete dit.subtasks;
         }
         break;
+      case 'link.add':
+        var lit = itemById(op.k);
+        if (lit) {
+          if (!lit.snippets) lit.snippets = [];
+          if (lit.snippets.indexOf(op.sid) < 0) lit.snippets.push(op.sid);
+        }
+        break;
+      case 'link.del':
+        var uit = itemById(op.k);
+        if (uit && uit.snippets) {
+          uit.snippets = uit.snippets.filter(function (x) { return x !== op.sid; });
+          if (!uit.snippets.length) delete uit.snippets;
+        }
+        break;
       case 'proj.add':
         if (!board.projects.some(function (p) { return p.toLowerCase() === b.name.toLowerCase(); })) {
           board.projects.push(b.name);
@@ -331,7 +346,7 @@
   function change(op) {
     op.id = rid(); op.tries = 0;
     applyOp(op);
-    if (isSnipOp(op)) renderSnippets();
+    if (isSnipOp(op)) afterSnipsChange();
     else {
       render(); if (projBg.classList.contains('open')) renderProjList();
       if (isArchOp(op) && archive) renderArchive();
@@ -344,6 +359,7 @@
   function dropMessage(op, err) {
     var what = op.label ? '“' + op.label + '”' : 'that change';
     if (op.t === 'item.patch' && /not found/i.test(err)) return what + ' was deleted somewhere else, so your change wasn’t saved.';
+    if (op.t.indexOf('link.') === 0 && /not found/i.test(err)) return what + ' wasn’t linked because its item or snippet was deleted somewhere else.';
     if (op.t.indexOf('sub.') === 0 && /not found/i.test(err)) return what + ' wasn’t saved because its item or step was deleted somewhere else.';
     if (op.t === 'snip.patch' && /not found/i.test(err)) return what + ' was deleted somewhere else, so your change wasn’t saved.';
     if (op.t === 'proj.close' && /no longer exists/i.test(err)) return 'Project ' + what + ' was removed somewhere else, so it wasn’t closed.';
@@ -670,6 +686,11 @@
       h += '<span class="steps' + (sdone === steps.length ? ' all' : '') + '" title="' + label + '" aria-label="' + label + '">' +
         ICON.steps + sdone + '/' + steps.length + '</span>';
     }
+    var links = it.snippets || [];
+    if (links.length) {
+      var llabel = plural(links.length, 'linked snippet', 'linked snippets');
+      h += '<span class="links" title="' + llabel + '" aria-label="' + llabel + '">' + ICON.link + links.length + '</span>';
+    }
     h += '</div></article>';
     return h;
   }
@@ -798,6 +819,7 @@
     renderNav();
     applyAccent();
     if (detailId) renderDetail();
+    if (page === 'snippets') renderSnippets(); // "Used for" reads from the board
   }
 
   /* ---------- stage track (board filtered to one project) ---------- */
@@ -820,6 +842,11 @@
     var last = cur === STAGES.length - 1;
     h += '<button type="button" class="btn primary sm stage-next" data-stage-next="1">' +
       (last ? 'Close project' : 'Move to ' + STAGES[cur + 1].name) + '</button>';
+    var psn = projectSnippets(name);
+    if (psn.length) {
+      h += '<button type="button" class="btn sm stage-snips" data-snips="1" aria-haspopup="menu" aria-expanded="false" title="Snippets linked to ' + esc(name) + '">' +
+        ICON.code + 'Snippets <span class="c">' + psn.length + '</span></button>';
+    }
     stageBarEl.innerHTML = h;
     stageBarEl.hidden = false;
     // On a narrow screen the track scrolls sideways: keep the current stage in view.
@@ -828,6 +855,19 @@
   }
   stageBarEl.addEventListener('click', function (e) {
     var name = filters.project;
+    var sb = e.target.closest('[data-snips]');
+    if (sb) {
+      if (popAnchor === sb) return closePop(true);
+      var html = projectSnippets(name).map(function (r) {
+        var how = [];
+        if (r.direct) how.push('project');
+        if (r.items) how.push(plural(r.items, 'item', 'items'));
+        return '<button role="menuitem" data-sid="' + esc(r.s.id) + '"><span class="pp-t">' + esc(r.s.title) + '</span>' +
+          '<span class="lang">' + esc(LANG_LABEL[r.s.language] || r.s.language) + '</span><span class="pp-how">' + how.join(' + ') + '</span></button>';
+      }).join('');
+      if (html) openPop(sb, '<p class="pop-label">Snippets for ' + esc(name) + '</p>' + html, function (d) { if (d.sid) openSnippetPage(d.sid); });
+      return;
+    }
     if (e.target.closest('[data-stage-next]')) {
       var cur = stageIdx(projStage(name));
       if (cur === STAGES.length - 1) closeProject(name); else moveProjectStage(name, STAGES[cur + 1].k);
@@ -1142,7 +1182,7 @@
     });
     syncSelect(sel);
   }
-  var SELECT_IDS = ['mProj', 'mStage', 'mPrio', 'qaProj', 'qaPrio', 'sLang', 'archProj', 'archStage', 'archGrp'];
+  var SELECT_IDS = ['mProj', 'mStage', 'mPrio', 'qaProj', 'qaPrio', 'sLang', 'archProj', 'archStage', 'archGrp', 'snipType', 'snipProj'];
   SELECT_IDS.forEach(function (id) { enhanceSelect(document.getElementById(id)); });
   function syncSelects() { SELECT_IDS.forEach(function (id) { syncSelect(document.getElementById(id)); }); }
 
@@ -1247,6 +1287,7 @@
     var p = document.getElementById('qaProj').value;
     return groupSuggestions(p, p ? projStage(p) : '');
   }, true);
+  attachSuggest(document.getElementById('sProjects'), function () { return board.projects; }, true);
   attachSuggest(document.getElementById('sTags'), function () {
     var all = []; snippets.forEach(function (s) { all = all.concat(s.tags); });
     return uniqueSorted(all);
@@ -1359,6 +1400,170 @@
     if (it && np && it.prio !== np) patchItem(dragId, { prio: np });
   });
 
+  /* ---------- picker: a search box over a short list ----------
+   * Used to link snippets to items and items to snippets, and for "More tags".
+   * Lives on the page (not inside a popup), so it survives the popup being
+   * rebuilt after each pick. Focus stays in the search box; the arrow keys move
+   * through the list (aria-activedescendant). o: { label, placeholder, empty,
+   * rows(q) -> [{ id, html }], onPick(id), keep (stay open after a pick),
+   * refocus() -> element to focus when it closes }. */
+  var pkEl = document.createElement('div');
+  pkEl.className = 'picker'; pkEl.hidden = true;
+  pkEl.innerHTML = '<input type="text" class="picker-in" role="combobox" aria-autocomplete="list" aria-expanded="true" aria-controls="pickerList" autocomplete="off">' +
+    '<div class="picker-list" id="pickerList" role="listbox"></div>';
+  document.body.appendChild(pkEl);
+  var pkIn = pkEl.firstChild, pkList = pkEl.lastChild;
+  var pk = null; // { o, anchor, rows, active }
+
+  function pickerRender() {
+    pk.rows = pk.o.rows(pkIn.value.trim().toLowerCase());
+    if (pk.active >= pk.rows.length) pk.active = pk.rows.length - 1;
+    if (pk.active < 0 && pk.rows.length) pk.active = 0;
+    pkList.innerHTML = pk.rows.length ? pk.rows.map(function (r, i) {
+      return '<div class="pk-row" role="option" id="pkopt' + i + '" data-i="' + i + '" aria-selected="' + (i === pk.active) + '">' + r.html + '</div>';
+    }).join('') : '<p class="pk-empty">' + esc(pk.o.empty || 'Nothing to pick') + '</p>';
+    if (pk.active >= 0) pkIn.setAttribute('aria-activedescendant', 'pkopt' + pk.active); else pkIn.removeAttribute('aria-activedescendant');
+  }
+  function pickerActive(i) {
+    pk.active = i;
+    Array.prototype.forEach.call(pkList.children, function (el, j) { el.setAttribute('aria-selected', String(j === i)); });
+    pkIn.setAttribute('aria-activedescendant', 'pkopt' + i);
+    pkList.children[i].scrollIntoView({ block: 'nearest' });
+  }
+  function openPicker(anchor, o) {
+    closePop(); closePicker();
+    pk = { o: o, anchor: anchor, rows: [], active: 0 };
+    pkIn.value = ''; pkIn.placeholder = o.placeholder || 'Search…';
+    pkIn.setAttribute('aria-label', o.label); pkEl.setAttribute('role', 'dialog'); pkEl.setAttribute('aria-label', o.label);
+    anchor.setAttribute('aria-expanded', 'true');
+    pkEl.hidden = false;
+    pickerRender();
+    var r = anchor.getBoundingClientRect(), pw = pkEl.offsetWidth, ph = pkEl.offsetHeight;
+    var left = Math.min(Math.max(8, r.left), window.innerWidth - pw - 8);
+    var top = r.bottom + 6;
+    if (top + ph > window.innerHeight - 8) top = Math.max(8, r.top - ph - 6);
+    pkEl.style.left = left + 'px'; pkEl.style.top = top + 'px';
+    pkIn.focus({ preventScroll: true });
+  }
+  function closePicker(restoreFocus) {
+    if (!pk) return false;
+    var o = pk.o, anchor = pk.anchor;
+    pk = null; pkEl.hidden = true; pkList.innerHTML = '';
+    if (document.contains(anchor)) anchor.setAttribute('aria-expanded', 'false');
+    if (restoreFocus) {
+      var f = (o.refocus && o.refocus()) || (document.contains(anchor) ? anchor : null);
+      if (f) f.focus({ preventScroll: true });
+    }
+    return true;
+  }
+  function pickerPick(i) {
+    var r = pk && pk.rows[i]; if (!r) return;
+    var o = pk.o;
+    if (!o.keep) closePicker(true);
+    o.onPick(r.id);
+    if (o.keep && pk) pickerRender();
+  }
+  pkIn.addEventListener('input', function () { if (pk) { pk.active = 0; pickerRender(); } });
+  pkIn.addEventListener('keydown', function (e) {
+    if (!pk) return;
+    var n = pk.rows.length;
+    if (e.key === 'ArrowDown' && n) { e.preventDefault(); pickerActive((pk.active + 1) % n); }
+    else if (e.key === 'ArrowUp' && n) { e.preventDefault(); pickerActive((pk.active - 1 + n) % n); }
+    else if (e.key === 'Enter') { e.preventDefault(); if (!e.isComposing) pickerPick(pk.active); }
+    else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); closePicker(true); }
+    else if (e.key === 'Tab') closePicker(true);
+  });
+  // mousedown (not click) so the search box keeps focus
+  pkList.addEventListener('mousedown', function (e) {
+    var el = e.target.closest('.pk-row'); if (!el) return;
+    e.preventDefault(); pickerPick(+el.dataset.i);
+  });
+  document.addEventListener('click', function (e) {
+    if (pk && !pkEl.contains(e.target) && !(pk.anchor && pk.anchor.contains(e.target))) closePicker();
+  });
+
+  /* ---------- snippet links (item <-> snippet) ---------- */
+  var MAX_LINKS = 20;
+  function linkUrl(itemId, sid) {
+    return '/api/items/' + encodeURIComponent(itemId) + '/snippets' + (sid ? '/' + encodeURIComponent(sid) : '');
+  }
+  function linkSnippet(itemId, sid) {
+    var it = itemById(itemId); if (!it) return;
+    var cur = it.snippets || [];
+    if (cur.indexOf(sid) >= 0) return;
+    if (cur.length >= MAX_LINKS) { toast('An item can have up to ' + MAX_LINKS + ' linked snippets.'); return; }
+    var s = snipById(sid);
+    change({ t: 'link.add', m: 'POST', u: linkUrl(itemId), b: { snippetId: sid }, k: itemId, sid: sid, label: s ? s.title : sid });
+  }
+  function unlinkSnippet(itemId, sid) {
+    var it = itemById(itemId); if (!it || (it.snippets || []).indexOf(sid) < 0) return;
+    var s = snipById(sid);
+    change({ t: 'link.del', m: 'DELETE', u: linkUrl(itemId, sid), k: itemId, sid: sid, label: s ? s.title : sid });
+  }
+  function itemsLinking(sid) {
+    return board.items.filter(function (i) { return (i.snippets || []).indexOf(sid) >= 0; });
+  }
+  function archivedLinking(sid) {
+    return archive ? archive.items.filter(function (i) { return (i.snippets || []).indexOf(sid) >= 0; }) : [];
+  }
+  function projsOf(s) { return s.projects || []; }
+  // Snippets tied to a project, directly or through its items, with how.
+  function projectSnippets(name) {
+    var out = [];
+    snippets.forEach(function (s) {
+      var direct = projsOf(s).some(function (p) { return sameText(p, name); });
+      var n = board.items.filter(function (i) { return i.project === name && (i.snippets || []).indexOf(s.id) >= 0; }).length;
+      if (direct || n) out.push({ s: s, direct: direct, items: n });
+    });
+    return out;
+  }
+  // Show a snippet on the Snippets page (clearing filters that would hide it).
+  function openSnippetPage(sid) {
+    var s = snipById(sid); if (!s) return;
+    closeDetail();
+    if (!snipMatches(s)) {
+      snipFilter = { q: '', tag: 'all', type: 'all', project: 'all' };
+      searchEl.value = '';
+    }
+    selectedSnip = sid;
+    libEl.classList.add('show-detail');
+    showPage('snippets');
+    renderSnippets();
+    var row = snipsEl.querySelector('.sitem[data-sid="' + sid + '"]'); if (row) row.scrollIntoView({ block: 'nearest' });
+  }
+  function linkSnippetPicker(anchor, itemId) {
+    openPicker(anchor, {
+      label: 'Link a snippet', placeholder: 'Search snippets…', keep: true, empty: 'No more snippets to link.',
+      refocus: function () { return detailEl.querySelector('[data-dact="linksnip"]'); },
+      rows: function (q) {
+        var it = itemById(itemId), have = it ? it.snippets || [] : [];
+        return snippets.filter(function (s) {
+          if (have.indexOf(s.id) >= 0) return false;
+          return !q || (s.title + '\n' + (s.type || '') + '\n' + s.tags.join(' ')).toLowerCase().indexOf(q) >= 0;
+        }).slice(0, 50).map(function (s) {
+          return { id: s.id, html: '<span class="pk-t">' + esc(s.title) + '</span><span class="lang">' + esc(LANG_LABEL[s.language] || s.language) + '</span>' +
+            (s.type ? '<span class="pk-sub">' + esc(s.type) + '</span>' : '') };
+        });
+      },
+      onPick: function (sid) { linkSnippet(itemId, sid); }
+    });
+  }
+  function linkItemPicker(anchor, sid) {
+    openPicker(anchor, {
+      label: 'Link to an item', placeholder: 'Search items…', keep: true, empty: 'No more items to link.',
+      refocus: function () { return snipDetailEl.querySelector('[data-act="linkitem"]'); },
+      rows: function (q) {
+        return board.items.filter(function (i) {
+          if ((i.snippets || []).indexOf(sid) >= 0) return false;
+          return !q || [i.title, i.project, i.group].join('\n').toLowerCase().indexOf(q) >= 0;
+        }).slice(0, 50).map(function (i) {
+          return { id: i.id, html: '<span class="pk-t">' + esc(i.title) + '</span>' + (i.project ? '<span class="pk-sub">' + esc(i.project) + '</span>' : '') };
+        });
+      },
+      onPick: function (id) { linkSnippet(id, sid); }
+    });
+  }
+
   /* ---------- expanded card (detail) ---------- */
   var detailBg = document.getElementById('detailBg');
   var detailEl = document.getElementById('detail');
@@ -1393,6 +1598,26 @@
     h += '<input type="text" class="sub-add" maxlength="200" autocomplete="off" aria-label="Add a step" placeholder="' +
       (full ? 'Step limit reached (' + MAX_STEPS + ')' : 'Add a step') + '"' + (full ? ' disabled' : '') + '></div>';
     return h;
+  }
+  // Linked snippets: a chip each (click opens it, x unlinks), plus a button that opens the picker.
+  function snippetsSectionHTML(it) {
+    var ids = it.snippets || [];
+    var h = '<div class="d-section"><div class="d-labelrow"><p class="d-label">Snippets</p>' +
+      '<button type="button" class="btn sm lk-add" data-dact="linksnip" aria-haspopup="dialog" aria-expanded="false">Link snippet</button></div>';
+    if (ids.length) {
+      h += '<ul class="lk-list">' + ids.map(function (sid) {
+        var s = snipById(sid);
+        if (!s) {
+          var gl = snipsReady ? 'Deleted snippet' : 'Loading…';
+          return '<li class="lk gone" data-sid="' + esc(sid) + '"><span class="lk-name">' + gl + '</span>' +
+            '<button type="button" class="lk-rm" aria-label="Unlink ' + gl.toLowerCase() + '" title="Unlink">&times;</button></li>';
+        }
+        return '<li class="lk" data-sid="' + esc(sid) + '"><button type="button" class="lk-open" title="Open this snippet">' +
+          '<span class="lk-name">' + esc(s.title) + '</span><span class="lang">' + esc(LANG_LABEL[s.language] || s.language) + '</span></button>' +
+          '<button type="button" class="lk-rm" aria-label="Unlink ' + esc(s.title) + '" title="Unlink">&times;</button></li>';
+      }).join('') + '</ul>';
+    }
+    return h + '</div>';
   }
   // Swap a step's text for an input. Used when clicked, and to put an
   // unfinished edit back after the popup is rebuilt.
@@ -1461,6 +1686,8 @@
       if (ae === addIn) keep.focus = { add: true };
       else if (ed && ae === ed) keep.focus = { edit: true };
       else if (ae.closest('.sub')) keep.focus = { sid: ae.closest('.sub').dataset.sid, cls: ae.className };
+      else if (ae.closest('.lk')) keep.focus = { lk: ae.closest('.lk').dataset.sid, cls: ae.className };
+      else if (ae.dataset && ae.dataset.dact === 'linksnip') keep.focus = { linkBtn: true };
     }
     var st = it.status || 'open', pr = it.prio || 'medium';
     detailEl.className = 'modal detail ' + pr;
@@ -1474,6 +1701,7 @@
     h += '<div class="d-section"><p class="d-label">Description</p>' +
       (it.note ? '<p class="d-note">' + esc(it.note) + '</p>' : '<p class="d-note muted">No description yet. Click Edit to add one.</p>') + '</div>';
     h += checklistHTML(it);
+    h += snippetsSectionHTML(it);
     h += datesHTML(it);
     h += '</div>';
     h += '<div class="d-foot"><button class="btn sm danger" data-dact="del">Delete</button>' +
@@ -1503,6 +1731,11 @@
       // If that step is gone (just removed), carry on typing in the add box.
       focusEl = (r2 && r2.querySelector('.' + keep.focus.cls.split(' ')[0])) || add1;
     }
+    else if (keep.focus && keep.focus.lk) {
+      // If that link is gone (just unlinked), land on the Link snippet button.
+      var lrow = detailEl.querySelector('.lk[data-sid="' + keep.focus.lk + '"]');
+      focusEl = (lrow && lrow.querySelector('.' + keep.focus.cls.split(' ')[0])) || detailEl.querySelector('[data-dact="linksnip"]');
+    } else if (keep.focus && keep.focus.linkBtn) focusEl = detailEl.querySelector('[data-dact="linksnip"]');
     if (focusEl && !focusEl.disabled) focusEl.focus({ preventScroll: true });
   }
   function openDetail(id) {
@@ -1513,6 +1746,7 @@
   function closeDetail() {
     if (!detailBg.classList.contains('open')) return;
     detailBg.classList.remove('open');
+    closePicker();
     var id = detailId, aid = detailArchId; detailId = null; detailArchId = null;
     var card = id && boardEl.querySelector('.card[data-id="' + id + '"]'); if (card) card.focus({ preventScroll: true });
     var row = aid && archListEl.querySelector('.arch-row[data-id="' + aid + '"] .arch-title'); if (row) row.focus({ preventScroll: true });
@@ -1528,6 +1762,19 @@
     }
     var s = e.target.closest('[data-ds]');
     if (s && detailId) { var it = itemById(detailId); if (it && it.status !== s.dataset.ds) patchItem(detailId, { status: s.dataset.ds }); return; }
+    var lkAdd = e.target.closest('[data-dact="linksnip"]');
+    if (lkAdd && detailId) {
+      if (pk && pk.anchor === lkAdd) return closePicker(true);
+      if (!snipsLoaded) loadSnippets();
+      return linkSnippetPicker(lkAdd, detailId);
+    }
+    var lkRow = e.target.closest('.lk');
+    if (lkRow && detailId) {
+      var lsid = lkRow.dataset.sid;
+      if (e.target.closest('.lk-rm')) unlinkSnippet(detailId, lsid);
+      else if (e.target.closest('.lk-open')) openSnippetPage(lsid);
+      return;
+    }
     var rm = e.target.closest('.sub-rm'), tx = e.target.closest('.sub-text');
     if ((rm || tx) && detailId) {
       var row = (rm || tx).closest('.sub'), sid = row.dataset.sid;
@@ -1992,7 +2239,8 @@
    * ========================================================== */
   var snippets = [];
   var snipsLoaded = false;
-  var snipFilter = { q: '', tag: 'all', type: 'all' };
+  var snipsReady = false;   // the list has really arrived (snipsLoaded is set when loading starts)
+  var snipFilter = { q: '', tag: 'all', type: 'all', project: 'all' };
   // Suggestions for "Used in"; anything else typed is kept too.
   var TYPE_PRESETS = ['Workflow function', 'Standalone function', 'Scheduled function', 'Custom button', 'Client script', 'Webhook'];
   function snipTypes() {
@@ -2047,16 +2295,16 @@
     snipsLoaded = true; // set up front so concurrent callers don't double-fetch
     return api('GET', '/api/snippets').then(function (list) {
       writeCache('snips', list);
-      snippets = list;
+      snippets = list; snipsReady = true;
       applyPending('snip'); // changes not saved yet stay on screen
-      renderSnippets();
+      afterSnipsChange();
     }).catch(function (e) {
       snipsLoaded = false; // try again next time the page is opened
       if (e.offline) {
         goOffline();
         if (snippets.length) return; // keep what's on screen
         var copy = readCache('snips');
-        if (copy) { snippets = copy; applyPending('snip'); renderSnippets(); return; }
+        if (copy) { snippets = copy; snipsReady = true; applyPending('snip'); afterSnipsChange(); return; }
       }
       snipsEl.innerHTML = '<p class="empty">Could not load snippets.<br><br>' + esc(e.message) + '</p>';
     });
@@ -2072,11 +2320,26 @@
     });
     return out;
   }
+  function snipProjects(raw) {
+    var out = [];
+    (Array.isArray(raw) ? raw : String(raw || '').split(',')).forEach(function (n) {
+      n = String(n).replace(/[\r\n]+/g, ' ').replace(/,/g, '').trim().slice(0, 80).trim();
+      if (n && !out.some(function (x) { return sameText(x, n); }) && out.length < 20) out.push(n);
+    });
+    return out;
+  }
+  // The snippet lists changed: redraw everything that shows them.
+  function afterSnipsChange() {
+    renderSnippets();
+    renderStageBar();
+    if (detailId) renderDetail();
+  }
   function localSnippet(p, into) {
     var now = new Date().toISOString();
-    var s = into || { id: p.id, created: now, title: '', language: 'deluge', type: '', tags: [], description: '', code: '' };
+    var s = into || { id: p.id, created: now, title: '', language: 'deluge', type: '', tags: [], projects: [], description: '', code: '' };
     ['title', 'language', 'type', 'description', 'code'].forEach(function (k) { if (k in p) s[k] = p[k]; });
     if ('tags' in p) s.tags = snipTags(p.tags);
+    if ('projects' in p) s.projects = snipProjects(p.projects);
     s.updated = now;
     return s;
   }
@@ -2084,13 +2347,48 @@
     return String(title || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 50) || 'snippet';
   }
 
+  // Everything the Project filter can offer: name -> { name, ids } where ids are the
+  // snippets linked to it directly or through one of its items.
+  function snipProjectIndex() {
+    var idx = {}, have = {};
+    snippets.forEach(function (s) { have[s.id] = true; });
+    function add(name, id) {
+      var k = String(name).toLowerCase();
+      if (!k) return;
+      var e = idx[k] || (idx[k] = { name: name, ids: {} });
+      e.ids[id] = true;
+    }
+    board.projects.forEach(function (p) { idx[p.toLowerCase()] = { name: p, ids: {} }; });
+    snippets.forEach(function (s) { projsOf(s).forEach(function (p) { add(p, s.id); }); });
+    board.items.forEach(function (it) {
+      if (it.project) (it.snippets || []).forEach(function (id) { if (have[id]) add(it.project, id); });
+    });
+    Object.keys(idx).forEach(function (k) { if (!Object.keys(idx[k].ids).length) delete idx[k]; });
+    return idx;
+  }
+  // "#tag" words in the search box that exactly match a tag are filters (and not
+  // searched as text); anything else, like a half-typed "#boo", is plain text.
+  function parseSnipQuery(q, tags) {
+    var text = [], used = [];
+    q.trim().split(/\s+/).filter(Boolean).forEach(function (w) {
+      var t = w.charAt(0) === '#' ? w.slice(1).toLowerCase() : '';
+      if (t && tags.indexOf(t) >= 0) { if (used.indexOf(t) < 0) used.push(t); } else text.push(w);
+    });
+    return { text: text, tags: used };
+  }
+  var snipCtx = { idx: {}, query: { text: [], tags: [] } }; // set by renderSnippets for snipMatches
   function snipMatches(s) {
+    var c = snipCtx;
     if (snipFilter.tag !== 'all' && s.tags.indexOf(snipFilter.tag) < 0) return false;
+    if (!c.query.tags.every(function (t) { return s.tags.indexOf(t) >= 0; })) return false;
     if (snipFilter.type !== 'all' && !sameText(s.type || '', snipFilter.type)) return false;
-    var q = snipFilter.q.trim().toLowerCase();
-    if (!q) return true;
-    var hay = (s.title + '\n' + (s.type || '') + '\n' + s.description + '\n' + s.tags.join(' ') + '\n' + s.code).toLowerCase();
-    return q.split(/\s+/).every(function (t) { return hay.indexOf(t) >= 0; });
+    if (snipFilter.project !== 'all') {
+      var e = c.idx[snipFilter.project.toLowerCase()];
+      if (!e || !e.ids[s.id]) return false;
+    }
+    if (!c.query.text.length) return true;
+    var hay = (s.title + '\n' + (s.type || '') + '\n' + s.description + '\n' + s.tags.map(function (t) { return '#' + t; }).join(' ') + '\n' + s.code).toLowerCase();
+    return c.query.text.every(function (w) { return hay.indexOf(w.toLowerCase()) >= 0; });
   }
   function snipById(id) {
     for (var i = 0; i < snippets.length; i++) if (snippets[i].id === id) return snippets[i];
@@ -2100,29 +2398,53 @@
   function renderSnippets() {
     document.getElementById('navSnipCount').textContent = snippets.length || '';
 
-    // "Used in" chips first (click again to clear), then tag chips, most-used first
+    // Filter row: Used in and Project menus, the most-used tags, a menu for the rest.
     var types = snipTypes();
-    if (snipFilter.type !== 'all' && !types.some(function (t) { return sameText(t, snipFilter.type); })) snipFilter.type = 'all';
-    var chips = '';
-    if (types.length) {
-      chips += '<span class="tagrow-lab">Used in</span>' + types.map(function (t) {
-        var n = snippets.filter(function (s) { return sameText(s.type || '', t); }).length;
-        var on = snipFilter.type !== 'all' && sameText(snipFilter.type, t);
-        return '<button class="tagbtn type" data-type="' + esc(t) + '" aria-pressed="' + on + '">' + esc(t) + ' <span class="c">' + n + '</span></button>';
-      }).join('');
-    }
+    if (snipFilter.type !== 'all' && !types.some(function (x) { return sameText(x, snipFilter.type); })) snipFilter.type = 'all';
     var counts = {};
-    snippets.forEach(function (s) { s.tags.forEach(function (t) { counts[t] = (counts[t] || 0) + 1; }); });
+    snippets.forEach(function (s) { s.tags.forEach(function (x) { counts[x] = (counts[x] || 0) + 1; }); });
     var tags = Object.keys(counts).sort(function (a, b) { return counts[b] - counts[a] || a.localeCompare(b); });
     if (snipFilter.tag !== 'all' && !counts[snipFilter.tag]) snipFilter.tag = 'all';
-    if (tags.length) {
-      chips += (types.length ? '<span class="tagrow-sep" aria-hidden="true"></span>' : '') + '<span class="tagrow-lab">Tags</span>';
-      chips += '<button class="tagbtn" data-tag="all" aria-pressed="' + (snipFilter.tag === 'all') + '">All <span class="c">' + snippets.length + '</span></button>';
-      tags.forEach(function (t) {
-        chips += '<button class="tagbtn" data-tag="' + esc(t) + '" aria-pressed="' + (snipFilter.tag === t) + '">#' + esc(t) + ' <span class="c">' + counts[t] + '</span></button>';
-      });
+    var pidx = snipProjectIndex();
+    if (snipFilter.project !== 'all' && !pidx[snipFilter.project.toLowerCase()]) snipFilter.project = 'all';
+    snipCtx = { idx: pidx, query: parseSnipQuery(snipFilter.q, tags) };
+
+    var typeOpts = [{ v: 'all', t: 'Used in: any' }].concat(types.map(function (x) {
+      return { v: x, t: x + ' (' + snippets.filter(function (s) { return sameText(s.type || '', x); }).length + ')' };
+    }));
+    setOptions(snipTypeSel, typeOpts, snipFilter.type);
+    document.getElementById('snipTypeWrap').hidden = typeOpts.length < 2;
+    var pnames = Object.keys(pidx).map(function (k) { return pidx[k]; }).sort(function (a, b) { return a.name.localeCompare(b.name); });
+    var projOpts = [{ v: 'all', t: 'Project: any' }].concat(pnames.map(function (e) { return { v: e.name, t: e.name + ' (' + Object.keys(e.ids).length + ')' }; }));
+    setOptions(snipProjSel, projOpts, snipFilter.project === 'all' ? 'all' : pidx[snipFilter.project.toLowerCase()].name);
+    document.getElementById('snipProjWrap').hidden = projOpts.length < 2;
+
+    var TOP_TAGS = 6;
+    var shown = tags.slice(0, TOP_TAGS);
+    if (snipFilter.tag !== 'all' && shown.indexOf(snipFilter.tag) < 0) shown.push(snipFilter.tag);
+    var chips = shown.map(function (x) {
+      return '<button type="button" class="tagbtn" data-tag="' + esc(x) + '" aria-pressed="' + (snipFilter.tag === x) + '" title="' +
+        (snipFilter.tag === x ? 'Stop filtering by #' : 'Show only #') + esc(x) + '">#' + esc(x) + ' <span class="c">' + counts[x] + '</span></button>';
+    }).join('');
+    if (tags.length > TOP_TAGS) {
+      chips += '<button type="button" class="tagbtn tag-more" data-more="1" aria-haspopup="dialog" aria-expanded="false">More tags <span class="c">' +
+        (tags.length - TOP_TAGS) + '</span></button>';
     }
     document.getElementById('tagFilters').innerHTML = chips;
+
+    var act = [];
+    if (snipFilter.type !== 'all') act.push({ k: 'type', lab: 'Used in', v: snipFilter.type });
+    if (snipFilter.project !== 'all') act.push({ k: 'project', lab: 'Project', v: pidx[snipFilter.project.toLowerCase()].name });
+    if (snipFilter.tag !== 'all') act.push({ k: 'tag', lab: 'Tag', v: '#' + snipFilter.tag });
+    snipCtx.query.tags.forEach(function (x) { act.push({ k: 'tok', t: x, lab: 'Tag', v: '#' + x }); });
+    if (snipCtx.query.text.length) act.push({ k: 'q', lab: 'Search', v: '“' + snipCtx.query.text.join(' ') + '”' });
+    var actEl = document.getElementById('snipActive');
+    actEl.innerHTML = act.map(function (x) {
+      return '<span class="fchip">' + x.lab + ': <b>' + esc(x.v) + '</b><button data-clear="' + x.k + '"' + (x.t ? ' data-t="' + esc(x.t) + '"' : '') +
+        ' aria-label="Remove ' + x.lab.toLowerCase() + ' filter" title="Remove">' +
+        '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 6L6 18M6 6l12 12"/></svg></button></span>';
+    }).join('') + (act.length > 1 ? '<button class="fclear" data-clear="all">Clear all</button>' : '');
+    actEl.hidden = !act.length;
 
     var vis = snippets.filter(snipMatches);
     if (!vis.some(function (s) { return s.id === selectedSnip; })) {
@@ -2146,6 +2468,42 @@
     renderSnipDetail();
   }
 
+  // Projects the snippet is linked to, and the items that use it (board first, then archived).
+  function snipLinksHTML(s) {
+    // The archive loads the first time a detail pane needs it.
+    if (!archLoaded) loadArchive().then(function () { if (archLoaded && page === 'snippets') renderSnipDetail(); });
+    var h = '<div class="sd-links">';
+    var projs = projsOf(s);
+    if (projs.length) {
+      h += '<div class="sd-row"><span class="sd-lab">Projects</span><span class="sd-chips">' + projs.map(function (n) {
+        var known = board.projects.indexOf(n) >= 0;
+        if (!known) return '<span class="chip proj gone" title="No longer on the board">' + esc(n) + '</span>';
+        var k = projColor(n);
+        return '<button type="button" class="chip proj" data-act="goproj" data-p="' + esc(n) + '"' + (k ? ' style="--pc:' + pcVar(k) + '"' : '') +
+          ' title="Show ' + esc(n) + ' on the board">' + esc(n) + '</button>';
+      }).join('') + '</span></div>';
+    }
+    var onBoard = itemsLinking(s.id), arch = archivedLinking(s.id);
+    h += '<div class="sd-row sd-used"><span class="sd-lab">Used for</span><button type="button" class="btn sm" data-act="linkitem" aria-haspopup="dialog" aria-expanded="false">Link to item</button></div>';
+    if (!onBoard.length && !arch.length) {
+      h += '<p class="sd-none">Not linked to any items yet.</p>';
+    } else {
+      h += '<ul class="uf-list">' + onBoard.map(function (i) {
+        var st = i.status || 'open';
+        return '<li class="uf" data-id="' + esc(i.id) + '"><button type="button" class="uf-open" data-act="openitem" title="Open this item">' + esc(i.title) + '</button>' +
+          (i.project ? projChip(i.project) + stageChip(itemStage(i), 'Stage') : '') +
+          '<span class="pill static ' + st + '">' + SLAB[st] + '</span>' +
+          '<button type="button" class="uf-rm" data-act="unlink" aria-label="Unlink ' + esc(i.title) + '" title="Unlink">&times;</button></li>';
+      }).join('') + arch.map(function (i) {
+        var st = i.status || 'open';
+        return '<li class="uf arch" data-id="' + esc(i.id) + '"><button type="button" class="uf-open" data-act="openarch" title="Open in the Archive">' + esc(i.title) + '</button>' +
+          '<span class="uf-tag">Archived</span>' + (i.project ? archProjChip(i.project) : '') +
+          '<span class="pill static ' + st + '">' + SLAB[st] + '</span></li>';
+      }).join('') + '</ul>';
+    }
+    return h + '</div>';
+  }
+
   function renderSnipDetail() {
     var s = snipById(selectedSnip);
     if (!s) {
@@ -2162,6 +2520,7 @@
     h += '<div class="sd-acts"><button class="btn sm primary" data-act="copy">' + ICON.copy + 'Copy</button>' +
       '<button class="btn sm" data-act="sedit">Edit</button><button class="btn sm danger" data-act="sdel" aria-label="Delete snippet">Delete</button></div>';
     h += '</div>';
+    h += snipLinksHTML(s);
     if (s.description) h += '<p class="sd-desc">' + esc(s.description) + '</p>';
     h += '<div class="codebox"><div class="gutter" aria-hidden="true">' + gutter + '</div><pre><code class="hljs">' + highlight(s.code, s.language) + '</code></pre></div>';
     snipDetailEl.innerHTML = h;
@@ -2199,19 +2558,72 @@
       snipFilter.tag = btn.dataset.tag; renderSnippets();
     } else if (act === 'type') {
       snipFilter.type = btn.dataset.type; renderSnippets();
+    } else if (act === 'goproj') {
+      filters.prio = 'all'; filters.project = btn.dataset.p; filters.group = 'all';
+      showPage('board'); render();
+    } else if (act === 'openitem') {
+      showPage('board'); openDetail(btn.closest('.uf').dataset.id);
+    } else if (act === 'openarch') {
+      showPage('archive'); openArchiveDetail(btn.closest('.uf').dataset.id);
+    } else if (act === 'unlink') {
+      unlinkSnippet(btn.closest('.uf').dataset.id, s.id);
+    } else if (act === 'linkitem') {
+      if (pk && pk.anchor === btn) return closePicker(true);
+      linkItemPicker(btn, s.id);
     } else if (act === 'sedit') {
       openSnip(s);
     } else if (act === 'sdel') {
-      confirmDialog({ title: 'Delete this snippet?', message: '“' + s.title + '” will be removed from your code library.' }).then(function (ok) {
+      var nl = itemsLinking(s.id).length + archivedLinking(s.id).length;
+      var dmsg = '“' + s.title + '” will be removed from your code library.' +
+        (nl ? ' It’s linked to ' + plural(nl, 'item', 'items') + '; those links will show as “Deleted snippet”.' : '');
+      confirmDialog({ title: 'Delete this snippet?', message: dmsg }).then(function (ok) {
         if (ok) change({ t: 'snip.del', m: 'DELETE', u: '/api/snippets/' + encodeURIComponent(s.id), k: s.id, label: s.title });
       });
     }
   });
 
+  var snipTypeSel = document.getElementById('snipType');
+  var snipProjSel = document.getElementById('snipProj');
+  snipTypeSel.addEventListener('change', function () { snipFilter.type = snipTypeSel.value; renderSnippets(); });
+  snipProjSel.addEventListener('change', function () { snipFilter.project = snipProjSel.value; renderSnippets(); });
   document.getElementById('tagFilters').addEventListener('click', function (e) {
     var b = e.target.closest('.tagbtn'); if (!b) return;
-    if (b.dataset.type) snipFilter.type = b.getAttribute('aria-pressed') === 'true' ? 'all' : b.dataset.type;
-    else snipFilter.tag = b.dataset.tag;
+    if (b.dataset.more) {
+      if (pk && pk.anchor === b) return closePicker(true);
+      var counts = {};
+      snippets.forEach(function (s) { s.tags.forEach(function (x) { counts[x] = (counts[x] || 0) + 1; }); });
+      var all = Object.keys(counts).sort(function (a, c) { return counts[c] - counts[a] || a.localeCompare(c); });
+      openPicker(b, {
+        label: 'Filter by tag', placeholder: 'Search tags…', empty: 'No tags match.',
+        refocus: function () { return document.querySelector('#tagFilters [data-more]'); },
+        rows: function (q) {
+          return all.filter(function (x) { return !q || x.indexOf(q.replace(/^#/, '')) >= 0; }).map(function (x) {
+            return { id: x, html: '<span class="pk-t">#' + esc(x) + '</span><span class="pk-sub">' + counts[x] + '</span>' };
+          });
+        },
+        onPick: function (x) { snipFilter.tag = x; renderSnippets(); }
+      });
+      return;
+    }
+    snipFilter.tag = snipFilter.tag === b.dataset.tag ? 'all' : b.dataset.tag; // click again to clear
+    renderSnippets();
+  });
+  document.getElementById('snipActive').addEventListener('click', function (e) {
+    var b = e.target.closest('[data-clear]'); if (!b) return;
+    var k = b.dataset.clear, tok = b.dataset.t;
+    if (k === 'all' || k === 'type') snipFilter.type = 'all';
+    if (k === 'all' || k === 'project') snipFilter.project = 'all';
+    if (k === 'all' || k === 'tag') snipFilter.tag = 'all';
+    if (k === 'all') snipFilter.q = '';
+    else if (k === 'tok' || k === 'q') {
+      // Take that part out of the search box; the rest of what was typed stays.
+      var words = snipFilter.q.trim().split(/\s+/).filter(Boolean);
+      snipFilter.q = words.filter(function (w) {
+        var isTag = snipCtx.query.tags.indexOf(w.slice(1).toLowerCase()) >= 0 && w.charAt(0) === '#';
+        return k === 'tok' ? w.slice(1).toLowerCase() !== tok || w.charAt(0) !== '#' : isTag;
+      }).join(' ');
+    }
+    searchEl.value = snipFilter.q;
     renderSnippets();
   });
 
@@ -2226,6 +2638,9 @@
     document.getElementById('sLang').value = s ? s.language : 'deluge';
     document.getElementById('sType').value = s ? (s.type || '') : (snipFilter.type !== 'all' ? snipFilter.type : '');
     document.getElementById('sTags').value = s ? s.tags.join(', ') : (snipFilter.tag !== 'all' ? snipFilter.tag : '');
+    // A new snippet starts in the project being looked at.
+    var dp = snipFilter.project !== 'all' ? snipFilter.project : (filters.project !== 'all' && board.projects.indexOf(filters.project) >= 0 ? filters.project : '');
+    document.getElementById('sProjects').value = s ? projsOf(s).join(', ') : dp;
     document.getElementById('sDesc').value = s ? s.description : '';
     document.getElementById('sCode').value = s ? s.code : '';
     syncSelects();
@@ -2260,6 +2675,7 @@
       language: document.getElementById('sLang').value,
       type: document.getElementById('sType').value.trim(),
       tags: document.getElementById('sTags').value,
+      projects: snipProjects(document.getElementById('sProjects').value),
       description: document.getElementById('sDesc').value.trim(),
       code: code
     };
@@ -2523,6 +2939,7 @@
   document.addEventListener('keydown', function (e) {
     if (e.key === 'Escape') {
       if (closePop(true)) return;
+      if (closePicker(true)) return;
       if (closeConfirm(false)) return;
       if (qaBg.classList.contains('open')) return qaClose();
       if (modalBg.classList.contains('open')) return closeModal();
@@ -2564,7 +2981,7 @@
     try { history.replaceState(null, '', page === 'board' ? location.pathname : '#' + page); } catch (_) {}
     if (page === 'snippets' && !snipsLoaded) loadSnippets();
     if (page === 'archive') { if (!archLoaded) loadArchive(); else renderArchive(); }
-    closePop();
+    closePop(); closePicker();
     renderNav();
   }
 
