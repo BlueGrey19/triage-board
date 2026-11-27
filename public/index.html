@@ -275,7 +275,7 @@
     <div class="fld qa-list">
       <label class="sr-only" for="qaText">List to add</label>
       <textarea id="qaText" rows="6" aria-label="List to add" aria-describedby="qaHint" placeholder="- Fix login redirect&#10;    - Check callback URL&#10;- Update invoice template"></textarea>
-      <p class="qa-hint" id="qaHint">One item per line. Indented lines become checklist steps.</p>
+      <p class="qa-hint" id="qaHint">One item per line. Indented lines become checklist steps. Lines starting with <code>&gt;</code> become the item’s description.</p>
     </div>
     <div class="frow qa-set">
       <div class="fld"><label for="qaProj">Project</label><select id="qaProj"></select></div>
@@ -289,6 +289,7 @@
       </div>
       <div class="fld"><label for="qaGroup">Group <span class="opt">(optional)</span></label><input id="qaGroup" placeholder="e.g. Books, Analytics" maxlength="80" autocomplete="off"></div>
     </div>
+    <div class="fld qa-shared"><label for="qaNote">Description for every item <span class="opt">(optional)</span></label><textarea id="qaNote" rows="2" maxlength="800" placeholder="Added to each item, before its own description"></textarea></div>
     <div class="qa-head"><b id="qaCount" aria-live="polite"></b></div>
     <div class="qa-prev" id="qaPrev"></div>
     <div class="macts">

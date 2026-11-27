@@ -1930,7 +1930,15 @@
     var out = [];
     String(text || '').split(/\r?\n/).forEach(function (line) {
       var indented = /^[ \t]/.test(line);
-      var t = line.replace(/^[ \t]+/, '')
+      var rest = line.replace(/^[ \t]+/, '');
+      // "> text" (indented or not) is description for the item above, like an email quote.
+      if (/^>/.test(rest) && out.length) {
+        var d = rest.replace(/^>\s?/, '').trim();
+        var prev = out[out.length - 1];
+        if (d) prev.desc.push(d);
+        return;
+      }
+      var t = rest.replace(/^>\s?/, '')
         .replace(/^(?:[-*•–·]|\d+[.)]|\(\d+\)|[a-z][.)])(?:\s+|$)/i, '').trim();
       if (!t) return;
       var cut = t;
@@ -1944,8 +1952,13 @@
         var cur = out[out.length - 1];
         if (cur.steps.length < MAX_STEPS) cur.steps.push(cut); else cur.dropped = (cur.dropped || 0) + 1;
       } else {
-        out.push({ title: cut, note: t.length > 200 ? t : '', steps: [] });
+        out.push({ title: cut, note: t.length > 200 ? t : '', desc: [], steps: [] });
       }
+    });
+    // A cut-off long title keeps its full text first, then any "> " lines.
+    out.forEach(function (n) {
+      n.note = [n.note].concat(n.desc).filter(Boolean).join('\n');
+      delete n.desc;
     });
     return out;
   }
@@ -1961,6 +1974,8 @@
     qaRender();
   }
   function qaValid() { return qaList.filter(function (n) { return n.title.trim(); }); }
+  // The batch's shared description first, then the item's own.
+  function qaNoteFor(n, shared) { return [shared, (n.note || '').trim()].filter(Boolean).join('\n\n'); }
   function qaRender() {
     var h = '';
     qaList.forEach(function (n, i) {
@@ -1971,6 +1986,12 @@
           return '<option value="' + p + '"' + (p === n.prio ? ' selected' : '') + '>' + p.charAt(0).toUpperCase() + p.slice(1) + '</option>';
         }).join('') + '</select>' +
         '<button type="button" class="qa-rm" data-rm="item" aria-label="Remove ' + esc(n.title) + '">&times;</button></div>';
+      if (n.note || n.noteOpen) {
+        h += '<div class="qa-row qa-desc"><textarea class="qa-note" rows="2" maxlength="800" aria-label="Description for ' + esc(n.title) +
+          '" placeholder="Description">' + esc(n.note) + '</textarea></div>';
+      } else {
+        h += '<button type="button" class="qa-addnote" data-note="' + i + '">+ Add description</button>';
+      }
       n.steps.forEach(function (st, j) {
         h += '<div class="qa-row qa-step" data-j="' + j + '">' +
           '<input class="qa-stext" aria-label="Step text" maxlength="200" value="' + esc(st) + '">' +
@@ -1988,13 +2009,17 @@
     document.getElementById('qaCount').textContent = v.length
       ? v.length + (v.length === 1 ? ' item' : ' items') + (steps ? ' · ' + steps + (steps === 1 ? ' step' : ' steps') : '') : '';
     var over = v.length > 100;
+    var shared = document.getElementById('qaNote').value.trim();
+    var long = v.some(function (n) { return qaNoteFor(n, shared).length > 800; });
     document.getElementById('qaErr').textContent = over ? 'Up to 100 items at a time.'
+      : long ? 'Some descriptions are over 800 characters and will be cut short.'
       : qaDropped ? qaDropped + ' extra ' + (qaDropped === 1 ? 'step was' : 'steps were') + ' left out (50 steps per item at most).' : '';
     var add = document.getElementById('qaAdd');
     add.textContent = v.length ? 'Add ' + v.length + (v.length === 1 ? ' item' : ' items') : 'Add items';
     add.disabled = !v.length || over;
   }
   qaText.addEventListener('input', function () { clearTimeout(qaTimer); qaTimer = setTimeout(qaParse, 150); });
+  document.getElementById('qaNote').addEventListener('input', qaUpdate);
   qaPrev.addEventListener('input', function (e) {
     var row = e.target.closest('.qa-item'); if (!row) return;
     var n = qaList[+row.dataset.i], t = e.target;
@@ -2003,6 +2028,8 @@
       row.querySelector('[data-rm="item"]').setAttribute('aria-label', 'Remove ' + t.value);
     } else if (t.classList.contains('qa-stext')) {
       n.steps[+t.closest('.qa-step').dataset.j] = t.value;
+    } else if (t.classList.contains('qa-note')) {
+      n.note = t.value;
     }
     qaUpdate();
   });
@@ -2012,6 +2039,14 @@
     n.prio = e.target.value; n.own = true;
   });
   qaPrev.addEventListener('click', function (e) {
+    var addNote = e.target.closest('[data-note]');
+    if (addNote) {
+      var k = +addNote.dataset.note;
+      qaList[k].noteOpen = true;
+      qaRender();
+      var box = qaPrev.querySelector('.qa-item[data-i="' + k + '"] .qa-note'); if (box) box.focus();
+      return;
+    }
     var btn = e.target.closest('[data-rm]'); if (!btn) return;
     var i = +btn.closest('.qa-item').dataset.i;
     if (btn.dataset.rm === 'item') qaList.splice(i, 1);
@@ -2031,6 +2066,7 @@
     sel.value = filters.project !== 'all' && board.projects.indexOf(filters.project) >= 0 ? filters.project : '';
     document.getElementById('qaPrio').value = filters.prio !== 'all' ? filters.prio : 'medium';
     document.getElementById('qaGroup').value = filters.group !== 'all' ? filters.group : '';
+    document.getElementById('qaNote').value = '';
     qaText.value = '';
     syncSelects();
     qaParse();
@@ -2044,7 +2080,7 @@
   }
   // Asks first when there's a list that would be lost.
   function qaClose() {
-    if (!qaText.value.trim()) return qaShut();
+    if (!qaText.value.trim() && !document.getElementById('qaNote').value.trim()) return qaShut();
     confirmDialog({ title: 'Discard this list?', message: 'The items you pasted won’t be added.', ok: 'Discard' }).then(function (ok) {
       if (ok) qaShut();
     });
@@ -2054,9 +2090,11 @@
     var v = qaValid();
     if (!v.length || v.length > 100) return;
     var project = document.getElementById('qaProj').value, group = document.getElementById('qaGroup').value.trim();
+    var shared = document.getElementById('qaNote').value.trim();
     var items = v.map(function (n) {
       var it = { id: 'i-' + rid(), title: n.title.trim(), project: project, prio: n.prio, group: group, status: 'open' };
-      if (n.note) it.note = n.note;
+      var note = qaNoteFor(n, shared).slice(0, 800);
+      if (note) it.note = note;
       var steps = n.steps.map(function (s) { return s.trim(); }).filter(Boolean);
       if (steps.length) it.subtasks = steps.map(function (s) { return { id: 's-' + rid(), text: s }; });
       return it;

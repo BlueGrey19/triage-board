@@ -41,12 +41,15 @@ It runs in one of two modes:
 
   ```
   - Fix login redirect
+      > Users land on a blank page after signing in.
       - Check callback URL
   - Update invoice template
   ```
 
-  Set the project, priority and group once for the batch, edit or remove anything in the
-  preview, then add up to 100 items as one change (one commit in GitHub mode).
+  Lines starting with `>` become the item's description. Set the project, priority,
+  group and an optional **description for every item** once for the batch, edit or
+  remove anything in the preview (including descriptions), then add up to 100 items as
+  one change (one commit in GitHub mode).
 - **Checklists:** break an item into steps from its popup. Type a step and press Enter
   to add it, tick it off, click its text to edit it, or remove it with ×. Cards show
   progress as `☑ 2/5`, and search finds step text too. Status stays manual.

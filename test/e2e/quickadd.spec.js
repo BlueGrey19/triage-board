@@ -280,3 +280,81 @@ test('quickadd', async ({ browser, app }, testInfo) => {
 
   done();
 });
+
+test('quickadd: descriptions', async ({ browser, app }, testInfo) => {
+  const { ok, done } = checks(testInfo);
+  const disk = () => JSON.parse(fs.readFileSync(path.join(app.dataDir, 'board.json'), 'utf8'));
+  const byTitle = t => disk().items.filter(i => i.title === t);
+  const wait = ms => new Promise(r => setTimeout(r, ms));
+  const ctx = await browser.newContext({ viewport: { width: 1300, height: 900 }, colorScheme: 'dark' });
+  const page = await ctx.newPage();
+  page.on('pageerror', e => ok(false, 'page error: ' + e.message));
+  page.on('dialog', d => d.accept());
+  const st = () => page.waitForFunction(() => document.querySelector('#boardView [data-sync]').dataset.state === 'ok', null, { timeout: 15000 }).then(() => wait(300));
+  const open = async () => { await page.click('#qaBtn'); await page.waitForSelector('#qaBg.open'); await wait(100); };
+  const notes = () => page.evaluate(() => Array.from(document.querySelectorAll('#qaPrev .qa-item')).map(it => {
+    const n = it.querySelector('.qa-note');
+    return { title: it.querySelector('.qa-title').value, note: n ? n.value : null, toggle: !!it.querySelector('.qa-addnote'), steps: it.querySelectorAll('.qa-stext').length };
+  }));
+
+  await page.goto(app.baseURL);
+  await page.waitForSelector('#board .card');
+  await open();
+  ok(/Lines starting with >/.test(await page.textContent('#qaHint')), 'hint explains > lines');
+
+  // "> " lines, indented or not, become the description of the item above
+  await page.fill('#qaText', '> Quote before any item\nFix invoice rounding\n    > Totals are out by a cent.\n    >Seen on SO-1043.\n    - Check line items\n> Not indented either\n>\nUpdate template\n- Leads');
+  await wait(350);
+  const n1 = await notes();
+  ok(n1.length === 4, '4 items (' + n1.map(n => n.title).join(' | ') + ')');
+  ok(n1[0].title === 'Quote before any item' && n1[0].note === null && n1[0].toggle, 'a > line before any item becomes an item');
+  ok(n1[1].title === 'Fix invoice rounding' && n1[1].note === 'Totals are out by a cent.\nSeen on SO-1043.\nNot indented either', 'description from > lines (indented, no space, not indented; empty > ignored): ' + JSON.stringify(n1[1].note));
+  ok(n1[1].steps === 1, 'steps still work alongside a description');
+  ok(n1[2].note === null && n1[2].toggle && n1[3].title === 'Leads', 'items without > lines show "+ Add description"');
+  ok(/3 steps|1 step/.test(await page.textContent('#qaCount')) && /4 items/.test(await page.textContent('#qaCount')), 'count: ' + await page.textContent('#qaCount'));
+
+  // a long title keeps its full text first, then the > lines
+  const long = 'word '.repeat(50).trim();
+  await page.fill('#qaText', long + '\n  > extra detail'); await wait(350);
+  const n2 = await notes();
+  ok(n2[0].note === long + '\nextra detail', 'long title: full text then > lines');
+
+  // "+ Add description" opens a box, focused; typing updates the item
+  await page.fill('#qaText', 'Leads\nContacts\nMembers\nAccreditations'); await wait(350);
+  await page.locator('.qa-item').nth(1).locator('.qa-addnote').click();
+  ok(await page.evaluate(() => document.activeElement.classList.contains('qa-note')), '"+ Add description" opens a focused box');
+  ok((await page.locator('.qa-item').nth(1).locator('.qa-note').getAttribute('aria-label')) === 'Description for Contacts', 'box is labelled');
+  await page.keyboard.type('Contacts only: also check the mobile field');
+
+  // shared description goes first on every item
+  await page.fill('#qaNote', 'Validation rule: criteria to function, regex ^[0-9]{10}$');
+  await page.press('#qaText', 'Control+Enter');
+  await st();
+  const shared = 'Validation rule: criteria to function, regex ^[0-9]{10}$';
+  ok(['Leads', 'Members', 'Accreditations'].every(t => byTitle(t)[0] && byTitle(t)[0].note === shared), 'shared description on every item');
+  ok(byTitle('Contacts')[0].note === shared + '\n\nContacts only: also check the mobile field', 'shared first, then the item\'s own');
+  await page.locator('.card', { hasText: 'Contacts' }).first().locator('[data-act="more"]').click();
+  await page.click('#pop [data-a="open"]'); await wait(150);
+  ok(/also check the mobile field/.test(await page.textContent('#detail .d-note')), 'description shows in the item popup');
+  await page.keyboard.press('Escape'); await wait(100);
+
+  // over 800 characters warns, and saving cuts it to 800
+  await open();
+  ok(await page.inputValue('#qaNote') === '', 'shared description is cleared when reopened');
+  await page.fill('#qaText', 'Long one\n  > ' + 'b'.repeat(300)); await wait(350);
+  await page.fill('#qaNote', 'a'.repeat(600));
+  ok(/over 800 characters/.test(await page.textContent('#qaErr')), 'warns when a description is over 800 characters');
+  await page.click('#qaAdd'); await st();
+  ok(byTitle('Long one')[0].note.length === 800, 'saved description cut to 800');
+
+  // only a shared description typed: closing still asks first
+  await open();
+  await page.fill('#qaNote', 'something');
+  let asked = false;
+  page.once('dialog', () => { asked = true; });
+  await page.keyboard.press('Escape'); await wait(200);
+  asked = asked || await page.locator('.confirm-bg.open, #confirmBg.open').count() > 0;
+  ok(asked, 'Esc with only a shared description asks before discarding');
+
+  done();
+});
